@@ -47,6 +47,22 @@ def patch_files(patches_dir: Path) -> set[str]:
     }
 
 
+def ignored_paths(patches_dir: Path, paths: list[str]) -> set[str]:
+    """Which of paths .ootignore or the patches repo's .gitignore would hide."""
+    if not paths:
+        return set()
+    ootignore = patches_dir / OOTIGNORE_FILE
+    r = Repo(patches_dir, None).git(
+        "-c", f"core.excludesFile={ootignore}",
+        "check-ignore", "--no-index", "-z", "--stdin",
+        input="\0".join(paths) + "\0",
+    )
+    # exit 1 means nothing matched
+    if r.returncode not in (0, 1):
+        raise PatchError(f"git check-ignore failed:\n{r.stderr.strip()}")
+    return {p for p in r.stdout.split("\0") if p}
+
+
 class FileMetadata(BaseModel):
     model_config = ConfigDict(strict=True)
 

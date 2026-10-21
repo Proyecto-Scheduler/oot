@@ -115,25 +115,79 @@ def test_git_propagates_exit_code(setup):
 # --- oot sync ---
 
 
-def test_sync_command_writes_metadata_and_commits(setup):
-    patches = setup.parent / "patches"
-    git(patches, "init")
-    git(patches, "config", "user.email", "t@t")
-    git(patches, "config", "user.name", "t")
-    git(setup, "update-ref", "refs/remotes/origin/main", "HEAD")
+@pytest.fixture
+def worked(tmp_path, monkeypatch):
+    """Kernel cloned at tag v1 with one committed change; config in cwd."""
+    up = tmp_path / "up"
+    up.mkdir()
+    git(up, "init", "-b", "main")
+    git(up, "config", "user.email", "t@t")
+    git(up, "config", "user.name", "t")
+    (up / "a.c").write_text("a\n")
+    git(up, "add", "a.c")
+    git(up, "commit", "-m", "v1")
+    git(up, "tag", "v1")
 
+    kernel = tmp_path / "kernel"
+    subprocess.run(["git", "clone", "-q", "--branch", "v1", f"file://{up}", str(kernel)], check=True)
+    git(kernel, "config", "user.email", "t@t")
+    git(kernel, "config", "user.name", "t")
+    (kernel / "a.c").write_text("a patched\n")
+    git(kernel, "commit", "-am", "work")
+
+    (tmp_path / "oot.yml").write_text(
+        f"dir: {tmp_path}\nkernel: {{ref: v1, dir: {kernel}}}\npatches: {{ref: main}}\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    return kernel
+
+
+def patches_log(tmp_path) -> str:
+    r = subprocess.run(
+        ["git", "-C", str(tmp_path / "patches"), "log", "--format=%s"],
+        capture_output=True, text=True,
+    )
+    return r.stdout.strip()
+
+
+def test_sync_command_writes_metadata_and_commits(worked, tmp_path):
     r = CliRunner().invoke(cli, ["sync", "-m", "snapshot"])
 
     assert r.exit_code == 0, r.output
-    meta = json.loads((patches / "metadata.json").read_text())
-    assert {f["path"] for f in meta["files"]} == {"sys/a.c", "sys/b.c"}
-    log = subprocess.run(
-        ["git", "-C", str(patches), "log", "--format=%s"], capture_output=True, text=True
-    )
-    assert log.stdout.strip() == "snapshot"
+    meta = json.loads((tmp_path / "patches" / "metadata.json").read_text())
+    assert [f["path"] for f in meta["files"]] == ["a.c"]
+    assert patches_log(tmp_path) == "snapshot"
 
 
-def test_sync_command_requires_message(setup):
+def test_sync_dry_run_prints_plan(worked, tmp_path):
+    r = CliRunner().invoke(cli, ["sync", "-m", "x", "--dry-run"])
+
+    assert r.exit_code == 0, r.output
+    assert "+ a.c" in r.output
+    assert not (tmp_path / "patches").exists()
+
+
+def test_sync_dirty_kernel_prompt_decline_stops(worked, tmp_path):
+    (worked / "b.c").write_text("untracked\n")
+
+    r = CliRunner().invoke(cli, ["sync", "-m", "x"], input="n\n")
+
+    assert r.exit_code == 0, r.output
+    assert "b.c" in r.output
+    assert "commit" in r.output.lower()
+    assert not (tmp_path / "patches").exists()
+
+
+def test_sync_dirty_kernel_prompt_accept_continues(worked, tmp_path):
+    (worked / "b.c").write_text("untracked\n")
+
+    r = CliRunner().invoke(cli, ["sync", "-m", "x"], input="y\n")
+
+    assert r.exit_code == 0, r.output
+    assert patches_log(tmp_path) == "x"
+
+
+def test_sync_command_requires_message(worked):
     r = CliRunner().invoke(cli, ["sync"])
     assert r.exit_code == 2
     assert "Missing option" in r.output

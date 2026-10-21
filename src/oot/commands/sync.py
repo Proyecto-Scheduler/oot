@@ -1,163 +1,227 @@
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from oot.config import Project
 from oot.errors import PatchError
 from oot.git.repo import Repo
-from oot.metadata import BASE_DIR, FileMetadata, Metadata, metadata_path, patch_files
+from oot.git.inspect import is_empty_dir
+from oot.metadata import (
+    BASE_DIR,
+    METADATA_FILE,
+    OOTIGNORE_FILE,
+    FileMetadata,
+    Metadata,
+    ignored_paths,
+    metadata_path,
+    patch_files,
+)
 
 logger = logging.getLogger(__name__)
 
-def _compute_entries(
-    kernel_repo: Repo,
-    patches_dir: Path,
-    upstream: str,
-    old: Metadata | None,
-) -> list[FileMetadata]:
-    """
-    Produce a consolidated FileMetadata list by comparing the current state of
-    patches_dir against upstream (origin/<ref>), never HEAD: install commits
-    patches onto HEAD.
-
-    Consolidation rules
-    -------------------
-    File on disk in patches_dir:
-      - Not in upstream                         → "new"
-      - In upstream, identical content          → drop (no patch needed)
-      - In upstream, different content          → "modified" (preserve base_blob)
-
-    File previously tracked (in old) but no longer on disk:
-      - Was "new" in prior metadata             → drop entirely (we added it, we removed it)
-      - Was "modified" or "deleted", in upstream → "deleted"
-      - Was "modified" or "deleted", not in upstream → drop (already gone)
-    """
-    existing = {f.path: f for f in old.files} if old else {}
-    on_disk = patch_files(patches_dir)
-    entries: list[FileMetadata] = []
-
-    for rel in on_disk:
-        blob = kernel_repo.get_blob_hash(rel, upstream)
-
-        if blob is None:
-            # File not in upstream at all → new
-            entries.append(FileMetadata(path=rel, base_blob=None, status="new"))
-            continue
-
-        if (patches_dir / rel).read_bytes() == kernel_repo.read_blob(blob):
-            logger.debug("Identical to upstream, dropping: %s", rel)
-            continue
-
-        # Preserve the base established when the file was first captured
-        # so that install still merges against the original.
-        prev = existing.get(rel)
-        if prev is not None and prev.status == "modified":
-            # Older metadata left base_blob unset and relied on the global commit
-            file_base_blob = prev.base_blob or kernel_repo.get_blob_hash(
-                rel, old.kernel_commit
-            )
-        else:
-            file_base_blob = blob
-
-        entries.append(
-            FileMetadata(path=rel, base_blob=file_base_blob, status="modified")
-        )
-
-    # Previously tracked files that disappeared from disk
-    for rel, prev in existing.items():
-        if rel in on_disk:
-            continue  # already handled above
-
-        if prev.status == "new":
-            # We added it, now it's gone → net effect is nothing
-            logger.debug("New file removed, consolidating away: %s", rel)
-            continue
-
-        if kernel_repo.get_blob_hash(rel, upstream) is None:
-            # Not in upstream either → nothing to restore, drop
-            logger.debug("Removed file absent from upstream, consolidating away: %s", rel)
-        else:
-            entries.append(FileMetadata(path=rel, base_blob=None, status="deleted"))
-
-    return sorted(entries, key=lambda e: e.path)
+# git diff --name-status letters; anything else (e.g. T, a type change) counts as modified
+_STATUS = {"A": "new", "D": "deleted"}
 
 
-def _plan_base_copies(
-    kernel_repo: Repo, patches_dir: Path, entries: list[FileMetadata]
-) -> tuple[dict[Path, bytes], list[Path]]:
-    """Base copies to write (missing ones) and to delete (no longer modified)."""
-    base_root = patches_dir / BASE_DIR
-    wanted = {e.path: e for e in entries if e.status == "modified"}
-
-    to_write: dict[Path, bytes] = {}
-    for rel, entry in wanted.items():
-        dst = base_root / rel
-        if dst.is_file():
-            continue
-        content = kernel_repo.read_blob(entry.base_blob) if entry.base_blob else None
-        if content is None:
-            raise PatchError(
-                f"Cannot create base copy for {rel}: blob {entry.base_blob} "
-                f"is not in {kernel_repo.path}.\n"
-                "Fetch the kernel commit it came from (e.g. a deeper 'kernel.depth') "
-                "and run 'oot sync' again."
-            )
-        to_write[dst] = content
-
-    stale = []
-    if base_root.is_dir():
-        stale = [
-            p
-            for p in base_root.rglob("*")
-            if p.is_file() and str(p.relative_to(base_root)) not in wanted
-        ]
-
-    return to_write, stale
+@dataclass
+class Plan:
+    upstream: str
+    base: str
+    head: str
+    metadata: Metadata
+    # new/modified: content at kernel HEAD; modified: content at base
+    content: dict[str, bytes]
+    base_copies: dict[str, bytes]
+    add: list[str] = field(default_factory=list)
+    update: list[str] = field(default_factory=list)
+    remove: list[str] = field(default_factory=list)
+    unchanged: int = 0
+    dirty: list[str] = field(default_factory=list)
 
 
-def sync(cfg: Project, message: str, dry_run: bool = False):
+def _is_repo_root(path: Path) -> bool:
+    return (path / ".git").exists()
 
-    patches_dir = cfg.patches.dir
 
-    patches_repo = Repo(cfg.patches.dir, None)
-    kernel_repo = Repo(cfg.kernel.dir, cfg.kernel.url)
+def _reserved(rel: str) -> bool:
+    return rel in (METADATA_FILE, OOTIGNORE_FILE) or rel.startswith(f"{BASE_DIR.parts[0]}/")
 
-    if not patches_repo.is_git_repo():
-        raise PatchError(f"{patches_dir} is not a git repository")
 
-    meta_path = metadata_path(patches_dir)
-    old = Metadata.load(meta_path) if meta_path.is_file() else None
-
-    upstream = f"origin/{cfg.kernel.ref}"
-    kernel_commit = kernel_repo.rev_parse(upstream)
-    if kernel_commit is None:
+def _make_plan(cfg: Project, kernel: Repo, patches_dir: Path) -> Plan:
+    ref = cfg.kernel.ref
+    upstream = kernel.upstream_ref(ref)
+    if upstream is None:
         raise PatchError(
-            f"{upstream} not found in {kernel_repo.path}. Run 'oot fetch -t kernel'."
+            f"'{ref}' is neither a tag nor origin/{ref} in {kernel.path}. "
+            "Check 'kernel.ref' or run 'oot fetch -t kernel'."
+        )
+    head = kernel.rev_parse("HEAD")
+    base = kernel.merge_base(head, upstream) if head else None
+    if base is None:
+        raise PatchError(
+            f"Kernel HEAD has no common history with {upstream}.\n"
+            "If the clone is shallow, deepen it (git fetch --unshallow) and try again."
         )
 
-    new_entries = _compute_entries(kernel_repo, patches_dir, upstream, old)
-    to_write, stale = _plan_base_copies(kernel_repo, patches_dir, new_entries)
-    new_metadata = Metadata(kernel_commit=kernel_commit, files=new_entries)
+    patches_is_repo = _is_repo_root(patches_dir)
+    if patches_dir.exists() and not patches_is_repo and not is_empty_dir(patches_dir):
+        raise PatchError(f"{patches_dir} is not empty and is not a git repository")
 
-    if dry_run:
-        print(new_metadata.model_dump_json(indent=2))
-        return
+    changes = kernel.changed_files(base, head)
+    paths = [rel for _, rel in changes]
+    collisions = [rel for rel in paths if _reserved(rel)]
+    if patches_is_repo:
+        collisions += sorted(ignored_paths(patches_dir, paths))
+    if collisions:
+        raise PatchError(
+            "These kernel changes cannot be stored in the patches repo, because the "
+            "paths are reserved by oot or ignored by .ootignore/.gitignore:\n  "
+            + "\n  ".join(collisions)
+        )
 
-    for path, content in to_write.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-    for path in stale:
-        path.unlink()
+    files: list[FileMetadata] = []
+    content: dict[str, bytes] = {}
+    base_copies: dict[str, bytes] = {}
+    for code, rel in changes:
+        status = _STATUS.get(code[0], "modified")
+        base_blob = None
+        if status != "deleted":
+            content[rel] = kernel.read_blob(f"{head}:{rel}")
+        if status == "modified":
+            base_blob = kernel.get_blob_hash(rel, base)
+            base_copies[rel] = kernel.read_blob(base_blob)
+        files.append(FileMetadata(path=rel, base_blob=base_blob, status=status))
 
-    new_metadata.save(meta_path)
-    logger.info("Wrote %s", meta_path)
+    plan = Plan(
+        upstream=upstream,
+        base=base,
+        head=head,
+        metadata=Metadata(kernel_commit=base, files=sorted(files, key=lambda f: f.path)),
+        content=content,
+        base_copies=base_copies,
+        dirty=kernel.dirty_files(),
+    )
 
-    patches_repo.git("add", "-A", check=True)
+    # Compare with the current patch set to classify each path
+    meta_path = metadata_path(patches_dir)
+    old = {}
+    if meta_path.is_file():
+        old = {f.path: f for f in Metadata.load(meta_path).files}
+    current = set(old) | (patch_files(patches_dir) if patches_is_repo else set())
 
+    for entry in plan.metadata.files:
+        rel = entry.path
+        if rel not in current:
+            plan.add.append(rel)
+        elif _differs(patches_dir, old.get(rel), entry, content.get(rel)):
+            plan.update.append(rel)
+        else:
+            plan.unchanged += 1
+    plan.remove = sorted(current - {f.path for f in plan.metadata.files})
+
+    return plan
+
+
+def _differs(patches_dir: Path, old: FileMetadata | None, new: FileMetadata, content: bytes | None) -> bool:
+    if old is None or old.status != new.status or old.base_blob != new.base_blob:
+        return True
+    dst = patches_dir / new.path
+    if new.status == "deleted":
+        return dst.exists()
+    if new.status == "modified" and not (patches_dir / BASE_DIR / new.path).is_file():
+        return True
+    return not dst.is_file() or dst.read_bytes() != content
+
+
+def format_plan(plan: Plan, ref: str) -> str:
+    status = {f.path: f.status for f in plan.metadata.files}
+    lines = [f"Base: {ref} ({plan.base[:10]})    Kernel HEAD: {plan.head[:10]}", ""]
+
+    rows = (
+        [("+", rel, status[rel]) for rel in plan.add]
+        + [("~", rel, status[rel]) for rel in plan.update]
+        + [("-", rel, "") for rel in plan.remove]
+    )
+    if rows:
+        width = max(len(rel) for _, rel, _ in rows)
+        lines += [f"  {mark} {rel.ljust(width)}  {st}".rstrip() for mark, rel, st in sorted(rows, key=lambda r: r[1])]
+        lines.append("")
+        lines.append(
+            f"Plan: {len(plan.add)} to add, {len(plan.update)} to update, "
+            f"{len(plan.remove)} to remove. Unchanged: {plan.unchanged}."
+        )
+    else:
+        lines.append("No changes. The patch set matches the kernel.")
+
+    if plan.dirty:
+        lines += ["", "Uncommitted changes in the kernel (not synced):"]
+        lines += [f"    {d}" for d in plan.dirty]
+
+    return "\n".join(lines)
+
+
+def _apply(plan: Plan, patches_dir: Path, branch: str, message: str):
+    if not _is_repo_root(patches_dir):
+        patches_dir.mkdir(parents=True, exist_ok=True)
+        Repo(patches_dir, None).git("init", "-q", "-b", branch, check=True)
+        logger.info("Initialised patches repo at %s", patches_dir)
+
+    for rel in plan.remove:
+        (patches_dir / rel).unlink(missing_ok=True)
+
+    for entry in plan.metadata.files:
+        dst = patches_dir / entry.path
+        if entry.status == "deleted":
+            dst.unlink(missing_ok=True)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(plan.content[entry.path])
+
+    base_root = patches_dir / BASE_DIR
+    if base_root.is_dir():
+        for p in base_root.rglob("*"):
+            if p.is_file() and str(p.relative_to(base_root)) not in plan.base_copies:
+                p.unlink()
+    for rel, data in plan.base_copies.items():
+        dst = base_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+
+    plan.metadata.save(metadata_path(patches_dir))
+
+    repo = Repo(patches_dir, None)
+    repo.git("add", "-A", check=True)
     # Only commit if there is something staged
-    r = patches_repo.git("diff", "--cached", "--quiet")
-    if r.returncode == 0:
+    if repo.git("diff", "--cached", "--quiet").returncode == 0:
         logger.info("Nothing to commit")
         return
-
-    patches_repo.git("commit", "-m", message, check=True)
+    repo.git("commit", "-q", "-m", message, check=True)
     logger.info("Committed: %s", message)
+
+
+def sync(
+    cfg: Project,
+    message: str,
+    dry_run: bool = False,
+    confirm: Callable[[str], bool] = lambda _: False,
+):
+    """Make the patches repo mirror the kernel's committed changes since its base."""
+    kernel = Repo(cfg.kernel.dir, cfg.kernel.url)
+    patches_dir = cfg.patches.dir
+
+    plan = _make_plan(cfg, kernel, patches_dir)
+
+    if dry_run:
+        print(format_plan(plan, cfg.kernel.ref))
+        return
+
+    if plan.dirty and not confirm(
+        f"Uncommitted changes in {kernel.path} will not be synced:\n"
+        + "\n".join(f"    {d}" for d in plan.dirty)
+        + "\nContinue with the committed state only? (No: stop so you can commit first)"
+    ):
+        logger.warning("Sync stopped. Commit your kernel changes and run 'oot sync' again.")
+        return
+
+    _apply(plan, patches_dir, cfg.patches.ref, message)

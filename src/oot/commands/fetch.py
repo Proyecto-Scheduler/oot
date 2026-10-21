@@ -34,6 +34,7 @@ def fetch(
                 )
                 return
 
+        _refuse_to_discard_work(repo)
         return repo.update(ref=target_cfg.ref, depth=target_cfg.depth)
 
     if is_empty_dir(repo.path):
@@ -53,3 +54,23 @@ def fetch(
             "  • Remove 'kernel.url' from the config to use the existing directory\n"
             "  • Use '--force' to overwrite the directory (WARNING: deletes contents)"
         )
+
+
+def _refuse_to_discard_work(repo: Repo):
+    """Updating resets and cleans the repo, so stop if that would lose work."""
+    commits = repo.local_commit_count()
+    dirty = repo.dirty_files()
+    if not commits and not dirty:
+        return
+
+    lines = []
+    if commits:
+        lines.append(f"{commits} local commit(s) not in any remote branch or tag")
+    if dirty:
+        lines.append("uncommitted changes:\n" + "\n".join(f"    {d}" for d in dirty))
+    raise RepoStateError(
+        f"{repo.path} has work that updating would discard:\n  "
+        + "\n  ".join(lines)
+        + "\n\nRun 'oot sync' to save kernel work to the patches repo, push it, "
+        "or use '--force' to discard it."
+    )
