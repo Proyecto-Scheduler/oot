@@ -597,3 +597,13 @@ def test_sync_raises_when_patches_is_not_a_git_repo(project, tmp_path):
 
     with pytest.raises(PatchError, match="not a git repository"):
         sync(bad_project, "should fail")
+
+
+def test_ootignored_files_are_not_recorded(project, kernel, patches):
+    """The patches fixture has a README.md; .ootignore keeps it out of metadata."""
+    (patches / ".ootignore").write_text("/README.md\n")
+    (patches / "extra.c").write_text("x\n")
+
+    sync(project, "with ootignore")
+
+    assert {f.path for f in read_metadata(patches).files} == {"extra.c"}

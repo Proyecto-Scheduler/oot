@@ -104,3 +104,36 @@ def test_patch_files_skips_tracked_files_deleted_from_disk(patches):
 def test_patch_files_handles_spaces_and_unicode(patches):
     write(patches / "sys/my file ñ.c")
     assert patch_files(patches) == {"sys/my file ñ.c"}
+
+
+# --- .ootignore ---
+
+
+def test_ootignore_excludes_housekeeping_files(patches):
+    write(patches / ".ootignore", "/README.md\n.github/\n")
+    write(patches / "README.md")
+    write(patches / ".github/workflows/ci.yml")
+    write(patches / "sys/a.c")
+    git(patches, "add", "README.md")  # tracked and untracked both excluded
+    assert patch_files(patches) == {"sys/a.c"}
+
+
+def test_ootignore_itself_is_not_a_patch(patches):
+    write(patches / ".ootignore", "")
+    write(patches / "sys/a.c")
+    assert patch_files(patches) == {"sys/a.c"}
+
+
+def test_anchored_ootignore_pattern_keeps_nested_file(patches):
+    write(patches / ".ootignore", "/README.md\n")
+    write(patches / "README.md")
+    write(patches / "sys/README.md")
+    assert patch_files(patches) == {"sys/README.md"}
+
+
+def test_gitignore_still_applies_with_ootignore(patches):
+    write(patches / ".gitignore", "*.o\n")
+    write(patches / ".ootignore", "/.gitignore\n")
+    write(patches / "sys/a.o")
+    write(patches / "sys/a.c")
+    assert patch_files(patches) == {"sys/a.c"}

@@ -4,6 +4,8 @@
 
 **Patches repo**: the git repo (`patches.dir`) holding only the files you changed or added, at the same relative paths as in the kernel, plus `metadata.json` and `.oot/`.
 
+**Patch set**: the files in the patches repo that are patches: everything except `metadata.json`, `.oot/`, `.ootignore` and what `.ootignore` matches. Computed by `patch_files()`.
+
 **Upstream**: the kernel tree at `origin/<kernel.ref>`. Sync reads upstream, never kernel `HEAD`, because install commits patches onto `HEAD`.
 
 **Metadata**: `metadata.json` in the patches repo. Records `kernel_commit` (upstream commit at sync time) and one entry per patched file with its file status.

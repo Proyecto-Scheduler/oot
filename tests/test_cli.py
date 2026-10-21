@@ -179,3 +179,14 @@ def test_path_rejects_unknown_target(setup):
     r = CliRunner().invoke(cli, ["path", "nope"])
     assert r.exit_code == 2
     assert "kernel" in r.output and "patches" in r.output
+
+
+def test_version_matches_pyproject():
+    import re
+
+    # regex rather than tomllib, which needs Python 3.11
+    pyproject = (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    expected = re.search(r'^version = "(.+)"', pyproject, re.M).group(1)
+    r = CliRunner().invoke(cli, ["--version"])
+    assert r.exit_code == 0, r.output
+    assert expected in r.output

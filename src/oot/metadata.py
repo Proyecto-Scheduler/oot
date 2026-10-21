@@ -7,6 +7,8 @@ from oot.errors import PatchError
 from oot.git.repo import Repo
 
 METADATA_FILE = "metadata.json"
+# gitignore-syntax list of versioned files in the patches repo that are not patches
+OOTIGNORE_FILE = ".ootignore"
 # Base copies live here inside the patches repo, mirroring kernel paths
 BASE_DIR = Path(".oot/base")
 
@@ -19,17 +21,26 @@ def patch_files(patches_dir: Path) -> set[str]:
     """Paths (relative) of the files in the patches repo that are patches.
 
     Tracked and untracked files present on disk, honouring .gitignore,
-    minus metadata.json and base copies.
+    minus metadata.json, base copies, .ootignore and what it matches.
     """
-    r = Repo(patches_dir, None).git(
-        "ls-files", "-z", "--cached", "--others", "--exclude-standard",
-        text=False, check=True,
-    )
+    repo = Repo(patches_dir, None)
+    ls = ("ls-files", "-z", "--cached", "--others")
+
+    def run(*args) -> set[str]:
+        r = repo.git(*ls, *args, text=False, check=True)
+        return {rel for rel in r.stdout.decode().split("\0") if rel}
+
+    files = run("--exclude-standard")
+
+    ootignore = patches_dir / OOTIGNORE_FILE
+    if ootignore.is_file():
+        # -i with only .ootignore as source: exactly the files it matches
+        files -= run("-i", f"--exclude-from={ootignore}")
+
     return {
         rel
-        for rel in r.stdout.decode().split("\0")
-        if rel
-        and rel != METADATA_FILE
+        for rel in files
+        if rel not in (METADATA_FILE, OOTIGNORE_FILE)
         and not rel.startswith(f"{BASE_DIR.parts[0]}/")
         # --cached still lists tracked files deleted from the work tree
         and (patches_dir / rel).is_file()

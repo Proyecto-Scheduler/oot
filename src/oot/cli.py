@@ -30,7 +30,7 @@ class OotGroup(click.Group):
 
 
 @click.group(cls=OotGroup)
-@click.version_option("1.0")
+@click.version_option(package_name="oot")
 @click.pass_context
 @click.option(
     "--config",

@@ -68,6 +68,14 @@ The patches repo mirrors the kernel tree layout but contains only the files you 
 }
 ```
 
+Files you want versioned in the patches repo but not installed into the kernel (README, CI config, `.gitignore`) go in `.ootignore`, which uses gitignore syntax. Anchor root-level names with `/`, otherwise they also match nested kernel files with the same name:
+
+```gitignore
+/README.md
+/.gitignore
+/.github/
+```
+
 Typical loop:
 
 1. `oot fetch` to get both trees.
@@ -80,7 +88,7 @@ Typical loop:
 
 Sync compares against `origin/<kernel.ref>`, not `HEAD`, because install commits patches onto `HEAD`.
 
-For every file in the patches repo (tracked or untracked, honouring `.gitignore`, excluding `metadata.json` and `.oot/`):
+For every file in the patches repo (tracked or untracked, honouring `.gitignore`, excluding `metadata.json`, `.oot/`, `.ootignore` and anything it matches):
 
 - not in upstream: `new`
 - in upstream, identical: dropped
