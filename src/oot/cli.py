@@ -111,7 +111,7 @@ def git(project, ctx):
 )
 @pass_project
 def sync(project, message, dry_run):
-    commands.sync(project, message, dry_run=dry_run)
+    commands.sync(project, message, dry_run=dry_run, confirm=click.confirm)
 
 
 @cli.command()

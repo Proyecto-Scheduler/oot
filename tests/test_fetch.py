@@ -214,3 +214,80 @@ def test_fetch_raises_when_clone_fails(project, tmp_path):
 
     with pytest.raises(FetchError, match="git clone"):
         fetch(project, target="kernel", force=False)
+
+
+# --- fetch: never discards local work without --force ---
+
+
+def kernel_identity(project):
+    git("config", "user.email", "t@t", cwd=project.kernel.dir)
+    git("config", "user.name", "t", cwd=project.kernel.dir)
+
+
+def test_fetch_refuses_to_reset_local_commits(project):
+    fetch(project, target="kernel", force=False)
+    kernel_identity(project)
+    (project.kernel.dir / "work.c").write_text("work\n")
+    git("add", "work.c", cwd=project.kernel.dir)
+    git("commit", "-m", "work", cwd=project.kernel.dir)
+
+    with pytest.raises(RepoStateError, match=r"(?s)1 local commit.*--force"):
+        fetch(project, target="kernel", force=False)
+
+    assert (project.kernel.dir / "work.c").exists()
+
+
+def test_fetch_refuses_to_reset_uncommitted_changes(project):
+    fetch(project, target="kernel", force=False)
+    (project.kernel.dir / "README").write_text("edited")
+
+    with pytest.raises(RepoStateError, match="README"):
+        fetch(project, target="kernel", force=False)
+
+    assert (project.kernel.dir / "README").read_text() == "edited"
+
+
+def test_fetch_force_discards_local_work(project):
+    fetch(project, target="kernel", force=False)
+    (project.kernel.dir / "README").write_text("edited")
+
+    fetch(project, target="kernel", force=True)
+
+    assert (project.kernel.dir / "README").read_text() == "hello"
+
+
+# --- fetch: tag refs ---
+
+
+@pytest.fixture
+def tagged(bare_repo, tmp_path):
+    """Tag v1 on the initial commit, then move main forward."""
+    work = tmp_path / "work-tag"
+    git("clone", str(bare_repo), str(work))
+    git("config", "user.email", "t@t", cwd=work)
+    git("config", "user.name", "t", cwd=work)
+    git("tag", "v1", cwd=work)
+    (work / "README").write_text("after v1")
+    git("commit", "-am", "after v1", cwd=work)
+    git("push", "origin", "main", "v1", cwd=work)
+    return bare_repo
+
+
+def test_fetch_clones_tag(project, tagged):
+    project.kernel.ref = "v1"
+
+    fetch(project, target="kernel", force=False)
+
+    assert (project.kernel.dir / "README").read_text() == "hello"
+
+
+def test_fetch_updates_existing_clone_to_tag(project, tagged):
+    fetch(project, target="kernel", force=False)  # main: "after v1"
+    project.kernel.ref = "v1"
+
+    fetch(project, target="kernel", force=False)
+
+    assert (project.kernel.dir / "README").read_text() == "hello"
+    head = git("rev-parse", "HEAD", cwd=project.kernel.dir).stdout.strip()
+    tag = git("rev-parse", "refs/tags/v1^{commit}", cwd=project.kernel.dir).stdout.strip()
+    assert head == tag

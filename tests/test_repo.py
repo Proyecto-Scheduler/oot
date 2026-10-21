@@ -69,10 +69,11 @@ def test_update_same_origin_calls_update_repo(tmp_path):
     repo = Repo(tmp_path, origin)
     with (
         patch.object(repo, "get_origin", return_value=origin),
+        patch.object(repo, "remote_has_tag", return_value=False),
         patch.object(repo, "_update_repo") as mock_update,
     ):
         repo.update(ref="main", depth=1)
-        mock_update.assert_called_once_with("main", 1)
+        mock_update.assert_called_once_with("main", 1, tag=False)
 
 
 def test_update_different_origin_raises(tmp_path):
@@ -132,7 +133,7 @@ def test_update_repo_calls_correct_git_commands_with_depth(tmp_path):
     assert any(
         "fetch" in call
         and "origin" in call
-        and "main" in call
+        and "+refs/heads/main:refs/remotes/origin/main" in call
         and "--depth" in call
         and "1" in call
         for call in calls
@@ -159,7 +160,7 @@ def test_update_repo_calls_correct_git_commands_without_depth(tmp_path):
     assert any(
         "fetch" in call
         and "origin" in call
-        and "main" in call
+        and "+refs/heads/main:refs/remotes/origin/main" in call
         and "--depth" not in call
         for call in calls
     )
