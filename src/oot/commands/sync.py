@@ -130,8 +130,6 @@ def _plan_base_copies(
 
 
 def sync(cfg: Project, message: str, dry_run: bool = False):
-    assert isinstance(cfg.kernel.dir, Path)
-    assert isinstance(cfg.patches.dir, Path)
 
     patches_dir = cfg.patches.dir
 

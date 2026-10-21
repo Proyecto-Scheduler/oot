@@ -1,13 +1,12 @@
 import logging
-import os
 from pathlib import Path
 
 import click
-import yaml
 
 import oot.commands as commands
 from oot.commands.install import Action, resolvers
-from oot.config import Project
+from oot.config import Project, load_project
+from oot.errors import ConfigError
 
 logger = logging.getLogger("oot")
 pass_project = click.make_pass_decorator(Project)
@@ -29,52 +28,24 @@ def cli(ctx, config, verbose):
 
     if verbose == 1:
         level = logging.INFO
-    if verbose == 2:
+    if verbose >= 2:
         level = logging.DEBUG
 
     logging.basicConfig(level=level, format="%(message)s")
 
-    default_path = Path("./oot.yml")
     config_path = Path(config)
 
-    if not config_path.exists():
-        if config_path == default_path:
-            raise click.ClickException(
-                "No config file found.\n"
-                "Expected default at ./oot.yml\n\n"
-                "Use --config to specify a custom file."
-            )
-        else:
-            raise click.ClickException(f"Config file not found: {config_path}")
+    if not config_path.exists() and config_path == Path("./oot.yml"):
+        raise click.ClickException(
+            "No config file found.\n"
+            "Expected default at ./oot.yml\n\n"
+            "Use --config to specify a custom file."
+        )
 
     try:
-        with open(config) as cfg:
-            data = yaml.safe_load(cfg)
-    except Exception as e:
-        raise click.ClickException(f"Failed to read config: {e}")
-
-    cfg = Project.model_validate(data)
-
-    cfg.dir = Path(cfg.dir).expanduser().resolve()
-
-    cfg.patches.dir = (
-        Path(
-            cfg.patches.dir
-            if cfg.patches.dir is not None
-            else os.path.join(cfg.dir, "patches")
-        )
-        .expanduser()
-        .resolve()
-    )
-    cfg.kernel.dir = (
-        Path(
-            cfg.kernel.dir
-            if cfg.kernel.dir is not None
-            else os.path.join(cfg.dir, "kernel")
-        )
-        .expanduser()
-        .resolve()
-    )
+        cfg = load_project(config_path)
+    except ConfigError as e:
+        raise click.ClickException(str(e))
 
     ctx.obj = cfg
 

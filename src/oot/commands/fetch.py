@@ -1,5 +1,4 @@
 import logging
-from pathlib import Path
 from typing import Callable, Literal
 
 from oot.config import Project
@@ -17,8 +16,6 @@ def fetch(
 ):
     target_cfg = getattr(cfg, target)
 
-    assert target_cfg.dir is not None
-    assert isinstance(target_cfg.dir, Path)
     repo = Repo(target_cfg.dir, target_cfg.url)
 
     if force:

@@ -41,8 +41,6 @@ def install(
     dry_run: bool = False,
     fail_fast: bool = True,
 ):
-    assert isinstance(cfg.kernel.dir, Path)
-    assert isinstance(cfg.patches.dir, Path)
 
     metadata = get_metadata(cfg, metadata_path)
     repo = Repo(cfg.kernel.dir, cfg.kernel.url)
@@ -183,7 +181,6 @@ def _install_new(ctx: Context, file: FileMetadata):
 
 
 def get_metadata(cfg: Project, metadata_path: str | Path | None):
-    assert cfg.patches.dir is not None
 
     metadata_path = (
         Path(metadata_path)

@@ -111,7 +111,7 @@ Metadata from before base copies existed is upgraded by the next `oot sync`, whi
 ```
 src/oot/
   cli.py            click entry point; loads config, maps flags to command calls
-  config.py         pydantic models for oot.yml (Project, RepoConfig)
+  config.py         load_project(): reads oot.yml into Project; fills and resolves repo dirs
   metadata.py       pydantic models for metadata.json (Metadata, FileMetadata)
   errors.py         RepoStateError, ConfigError, FetchError
   commands/         one module per command; no click dependency

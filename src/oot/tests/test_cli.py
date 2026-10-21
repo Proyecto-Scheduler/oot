@@ -78,3 +78,18 @@ def test_on_conflict_flag_skips_prompt(setup):
     assert r.exit_code == 0, r.output
     assert (setup / "sys/a.c").read_text() == "theirs\n"
     assert (setup / "sys/b.c").exists()
+
+
+def test_missing_default_config_is_a_clean_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    r = CliRunner().invoke(cli, ["path", "kernel"])
+    assert r.exit_code == 1
+    assert "No config file found" in r.output
+
+
+def test_invalid_config_is_a_clean_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "oot.yml").write_text("dir: /x\nkernel: {}\npatches: {ref: b}\n")
+    r = CliRunner().invoke(cli, ["path", "kernel"])
+    assert r.exit_code == 1
+    assert "ref" in r.output
