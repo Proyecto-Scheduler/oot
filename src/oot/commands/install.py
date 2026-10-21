@@ -9,7 +9,8 @@ from typing import Callable
 from oot.config import Project
 from oot.git.merge import merge3
 from oot.git.repo import Repo
-from oot.metadata import BASE_DIR, Metadata, FileMetadata
+from oot.metadata import BASE_DIR, FileMetadata, Metadata
+from oot.metadata import metadata_path as default_metadata_path
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,9 @@ def install(
     fail_fast: bool = True,
 ):
 
-    metadata = get_metadata(cfg, metadata_path)
+    metadata = Metadata.load(
+        Path(metadata_path) if metadata_path else default_metadata_path(cfg.patches.dir)
+    )
     repo = Repo(cfg.kernel.dir, cfg.kernel.url)
 
     ctx = Context(repo, cfg.patches.dir, cfg.kernel.dir, resolver, dry_run)
@@ -178,17 +181,3 @@ def _install_new(ctx: Context, file: FileMetadata):
         shutil.copy(src, dst)
 
     logger.debug("Installed %s", file.path)
-
-
-def get_metadata(cfg: Project, metadata_path: str | Path | None):
-
-    metadata_path = (
-        Path(metadata_path)
-        if metadata_path is not None
-        else cfg.patches.dir / "metadata.json"
-    )
-
-    if not metadata_path.is_file():
-        raise FileNotFoundError(f"metadata file not found: {metadata_path}")
-
-    return Metadata.model_validate_json(metadata_path.read_text())

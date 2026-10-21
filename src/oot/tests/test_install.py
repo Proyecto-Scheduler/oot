@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from oot.commands.install import install, get_metadata, resolvers
+from oot.commands.install import install, resolvers
 from oot.config import Project, RepoConfig
 from oot.metadata import BASE_DIR
 
@@ -86,29 +86,22 @@ def modified(dirs, base, kernel, patch, rel=REL):
 
 
 # ---------------------------------------------------------------------------
-# get_metadata
+# metadata location
 # ---------------------------------------------------------------------------
 
 
-def test_get_metadata_reads_default_path(project, dirs):
-    write_metadata(
-        dirs["patches"], "abc123", [{"path": "sys/kern/foo.c", "status": "new"}]
-    )
-    meta = get_metadata(project, None)
-    assert meta.kernel_commit == "abc123"
-    assert len(meta.files) == 1
+def test_install_reads_custom_metadata_path(project, dirs):
+    write(dirs["patches"] / "sys/kern/new.c", "new\n")
+    custom = write_metadata(dirs["tmp"], "abc", [{"path": "sys/kern/new.c", "status": "new"}])
+
+    install(project, never_called, metadata_path=str(custom))
+
+    assert (dirs["kernel"] / "sys/kern/new.c").exists()
 
 
-def test_get_metadata_reads_custom_path(project, dirs):
-    custom = dirs["tmp"] / "custom_meta.json"
-    custom.write_text(json.dumps({"base_blob": "xyz", "files": []}))
-    meta = get_metadata(project, str(custom))
-    assert meta.kernel_commit == "xyz"
-
-
-def test_get_metadata_raises_when_missing(project):
+def test_install_raises_when_metadata_missing(project):
     with pytest.raises(FileNotFoundError, match="metadata file not found"):
-        get_metadata(project, None)
+        install(project, never_called)
 
 
 # ---------------------------------------------------------------------------

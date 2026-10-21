@@ -3,25 +3,9 @@ from pathlib import Path
 
 from oot.config import Project
 from oot.git.repo import Repo
-from oot.metadata import BASE_DIR, FileMetadata, Metadata
+from oot.metadata import BASE_DIR, FileMetadata, Metadata, metadata_path, patch_files
 
 logger = logging.getLogger(__name__)
-
-# Files in patches_dir that are never part of the snapshot
-_EXCLUDED = {"metadata.json"}
-
-
-def _files_on_disk(patches_dir: Path) -> set[str]:
-    """All non-excluded files currently on disk in patches_dir (relative)."""
-    result = set()
-    for p in patches_dir.rglob("*"):
-        if p.is_file():
-            rel = str(p.relative_to(patches_dir))
-            parts = Path(rel).parts
-            if rel not in _EXCLUDED and ".git" not in parts and parts[0] != ".oot":
-                result.add(rel)
-    return result
-
 
 def _compute_entries(
     kernel_repo: Repo,
@@ -47,7 +31,7 @@ def _compute_entries(
       - Was "modified" or "deleted", not in upstream → drop (already gone)
     """
     existing = {f.path: f for f in old.files} if old else {}
-    on_disk = _files_on_disk(patches_dir)
+    on_disk = patch_files(patches_dir)
     entries: list[FileMetadata] = []
 
     for rel in on_disk:
@@ -139,12 +123,8 @@ def sync(cfg: Project, message: str, dry_run: bool = False):
     if not patches_repo.is_git_repo():
         raise RuntimeError(f"{patches_dir} is not a git repository")
 
-    metadata_path = patches_dir / "metadata.json"
-    old = (
-        Metadata.model_validate_json(metadata_path.read_text())
-        if metadata_path.is_file()
-        else None
-    )
+    meta_path = metadata_path(patches_dir)
+    old = Metadata.load(meta_path) if meta_path.is_file() else None
 
     upstream = f"origin/{cfg.kernel.ref}"
     kernel_commit = kernel_repo.rev_parse(upstream)
@@ -167,8 +147,8 @@ def sync(cfg: Project, message: str, dry_run: bool = False):
     for path in stale:
         path.unlink()
 
-    metadata_path.write_text(new_metadata.model_dump_json(indent=2) + "\n")
-    logger.info("Wrote %s", metadata_path)
+    new_metadata.save(meta_path)
+    logger.info("Wrote %s", meta_path)
 
     patches_repo.git("add", "-A", check=True)
 

@@ -93,7 +93,22 @@ def path(project, target):
 @click.pass_context
 @pass_project
 def git(project, ctx):
-    commands.git(project, ctx.args)
+    ctx.exit(commands.git(project, ctx.args))
+
+
+@cli.command()
+@click.option("--message", "-m", required=True, help="commit message for the patches repo")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="print the new metadata without writing or committing",
+)
+@pass_project
+def sync(project, message, dry_run):
+    try:
+        commands.sync(project, message, dry_run=dry_run)
+    except Exception as e:
+        raise click.ClickException(str(e))
 
 
 @cli.command()

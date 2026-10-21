@@ -93,3 +93,47 @@ def test_invalid_config_is_a_clean_error(tmp_path, monkeypatch):
     r = CliRunner().invoke(cli, ["path", "kernel"])
     assert r.exit_code == 1
     assert "ref" in r.output
+
+
+# --- oot git ---
+
+
+def test_git_runs_in_patches_dir(setup):
+    # neither the project dir nor the kernel's parent is the patches repo
+    git(setup.parent / "patches", "init")
+    r = CliRunner().invoke(cli, ["git", "rev-parse", "--is-inside-work-tree"])
+    assert r.exit_code == 0, r.output
+
+
+def test_git_propagates_exit_code(setup):
+    git(setup.parent / "patches", "init")
+    # 128 is git's own fatal-error code, distinct from click's 1
+    r = CliRunner().invoke(cli, ["git", "rev-parse", "--verify", "nope"])
+    assert r.exit_code == 128
+
+
+# --- oot sync ---
+
+
+def test_sync_command_writes_metadata_and_commits(setup):
+    patches = setup.parent / "patches"
+    git(patches, "init")
+    git(patches, "config", "user.email", "t@t")
+    git(patches, "config", "user.name", "t")
+    git(setup, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+    r = CliRunner().invoke(cli, ["sync", "-m", "snapshot"])
+
+    assert r.exit_code == 0, r.output
+    meta = json.loads((patches / "metadata.json").read_text())
+    assert {f["path"] for f in meta["files"]} == {"sys/a.c", "sys/b.c"}
+    log = subprocess.run(
+        ["git", "-C", str(patches), "log", "--format=%s"], capture_output=True, text=True
+    )
+    assert log.stdout.strip() == "snapshot"
+
+
+def test_sync_command_requires_message(setup):
+    r = CliRunner().invoke(cli, ["sync"])
+    assert r.exit_code == 2
+    assert "Missing option" in r.output

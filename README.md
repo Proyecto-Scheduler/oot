@@ -39,7 +39,7 @@ patches:
 | `oot sync -m <message> [--dry-run]` | Compare the patches repo against upstream (`origin/<kernel.ref>`), write `metadata.json` and base copies, commit the patches repo. |
 | `oot install [--dry-run] [--on-conflict abort\|skip\|force] [-ff] [-m <metadata>]` | Apply the patches recorded in `metadata.json` to the kernel tree and commit once. Without `--on-conflict` it prompts per conflict. `--dry-run` only reports conflicts. `-ff` stops at the first error. |
 | `oot path kernel\|patches` | Print the resolved directory. |
-| `oot git <args>` | Run `git -C <patches dir> <args>`. |
+| `oot git <args>` | Run `git -C <patches dir> <args>` and exit with git's exit code. |
 
 `-v` sets log level to INFO, `-vv` to DEBUG.
 
@@ -80,7 +80,7 @@ Typical loop:
 
 Sync compares against `origin/<kernel.ref>`, not `HEAD`, because install commits patches onto `HEAD`.
 
-For every file in the patches repo (excluding `metadata.json` and `.oot/`):
+For every file in the patches repo (tracked or untracked, honouring `.gitignore`, excluding `metadata.json` and `.oot/`):
 
 - not in upstream: `new`
 - in upstream, identical: dropped
@@ -112,7 +112,7 @@ Metadata from before base copies existed is upgraded by the next `oot sync`, whi
 src/oot/
   cli.py            click entry point; loads config, maps flags to command calls
   config.py         load_project(): reads oot.yml into Project; fills and resolves repo dirs
-  metadata.py       pydantic models for metadata.json (Metadata, FileMetadata)
+  metadata.py       metadata.json models with load/save; patch_files() lists the patch set
   errors.py         RepoStateError, ConfigError, FetchError
   commands/         one module per command; no click dependency
     fetch.py
@@ -134,8 +134,8 @@ All git work goes through `Repo.git(*args)`, which runs `git -C <path>` and retu
 ## Tests
 
 ```sh
-pip install pytest
-pytest src/oot/tests
+pip install -e '.[dev]'
+pytest
 ```
 
 `test_sync.py`, `test_fetch.py`, `test_install.py` and `test_merge.py` use real files and git repos in `tmp_path`. `test_repo.py` mocks `subprocess.run`.
