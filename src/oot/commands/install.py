@@ -4,7 +4,7 @@ import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 
 from oot.config import Project
 from oot.git.merge import merge3
@@ -13,20 +13,14 @@ from oot.metadata import BASE_DIR, Metadata, FileMetadata
 
 logger = logging.getLogger(__name__)
 
-OnConflict = Literal["force", "skip", "abort"]
-
-
 class Action(Enum):
+    FORCE = "force"
     SKIP = "skip"
-    CONTINUE = "continue"
     ABORT = "abort"
 
 
-resolvers = {
-    "abort": lambda _: Action.ABORT,
-    "skip": lambda _: Action.SKIP,
-    "force": lambda _: Action.CONTINUE,
-}
+# Fixed-policy resolvers for --on-conflict; the CLI prompt is the other adapter
+resolvers = {a.value: (lambda _, a=a: a) for a in Action}
 
 
 @dataclass

@@ -114,7 +114,7 @@ src/oot/
   config.py         pydantic models for oot.yml (Project, RepoConfig)
   metadata.py       pydantic models for metadata.json (Metadata, FileMetadata)
   errors.py         RepoStateError, ConfigError, FetchError
-  commands/         one module per command; no click dependency except fetch's confirm prompt
+  commands/         one module per command; no click dependency
     fetch.py
     sync.py
     install.py
@@ -127,7 +127,7 @@ src/oot/
   tests/
 ```
 
-Commands take a `Project` and plain arguments, so they can be called and tested without click. Interactive decisions are passed in as callables (`resolver` in install).
+Commands take a `Project` and plain arguments, so they can be called and tested without click. Interactive decisions are passed in as callables: `resolver` in install returns an `Action` (`force`, `skip`, `abort`), `confirm` in fetch returns a bool. The CLI passes prompting versions; `--on-conflict` passes a fixed one.
 
 All git work goes through `Repo.git(*args)`, which runs `git -C <path>` and returns the `CompletedProcess`. There is no git library dependency.
 

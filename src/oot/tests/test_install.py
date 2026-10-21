@@ -128,10 +128,10 @@ def test_resolver_skip_returns_skip():
     assert resolvers["skip"]("any/path") == Action.SKIP
 
 
-def test_resolver_force_returns_continue():
+def test_resolver_force_returns_force():
     from oot.commands.install import Action
 
-    assert resolvers["force"]("any/path") == Action.CONTINUE
+    assert resolvers["force"]("any/path") == Action.FORCE
 
 
 # ---------------------------------------------------------------------------

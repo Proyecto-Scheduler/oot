@@ -1,13 +1,12 @@
 import logging
 import os
 from pathlib import Path
-from typing import Literal
 
 import click
 import yaml
 
 import oot.commands as commands
-from oot.commands.install import resolvers
+from oot.commands.install import Action, resolvers
 from oot.config import Project
 
 logger = logging.getLogger("oot")
@@ -99,7 +98,7 @@ def fetch(project, force, target):
     try:
         targets = ["kernel", "patches"] if target == "all" else [target]
         for t in targets:
-            commands.fetch(cfg=project, target=t, force=force)  # type: ignore
+            commands.fetch(cfg=project, target=t, force=force, confirm=click.confirm)  # type: ignore
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -137,7 +136,7 @@ def git(project, ctx):
 @click.option(
     "--on-conflict",
     help="default action to take when a conflict is detected",
-    type=click.Choice(["abort", "force", "skip"]),
+    type=click.Choice([a.value for a in Action]),
 )
 @click.option("--metadata_path", "-m", help="custom path for metadata file")
 @pass_project
@@ -158,10 +157,12 @@ def install(project, dry_run, fail_fast, on_conflict, metadata_path):
         raise click.ClickException(str(e))
 
 
-def prompt_resolver(path: str) -> Literal["abort", "skip", "force"]:
+def prompt_resolver(path: str) -> Action:
     click.echo(f"\n  ! {path} has local changes on top of the applied patch.")
-    return click.prompt(
-        "    What do you want to do?",
-        type=click.Choice(["force", "skip", "abort"]),
-        default="abort",
+    return Action(
+        click.prompt(
+            "    What do you want to do?",
+            type=click.Choice([a.value for a in Action]),
+            default=Action.ABORT.value,
+        )
     )
