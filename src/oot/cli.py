@@ -1,4 +1,6 @@
 import logging
+import shlex
+import subprocess
 from pathlib import Path
 
 import click
@@ -6,13 +8,28 @@ import click
 import oot.commands as commands
 from oot.commands.install import Action, resolvers
 from oot.config import Project, load_project
-from oot.errors import ConfigError
+from oot.errors import OotError
 
 logger = logging.getLogger("oot")
 pass_project = click.make_pass_decorator(Project)
 
 
-@click.group()
+class OotGroup(click.Group):
+    """Turns expected failures into one-line errors; anything else keeps its traceback."""
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (OotError, OSError) as e:
+            raise click.ClickException(str(e))
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else e.stderr
+            raise click.ClickException(
+                f"`{shlex.join(map(str, e.cmd))}` failed:\n{(stderr or '').strip()}"
+            )
+
+
+@click.group(cls=OotGroup)
 @click.version_option("1.0")
 @click.pass_context
 @click.option(
@@ -42,12 +59,7 @@ def cli(ctx, config, verbose):
             "Use --config to specify a custom file."
         )
 
-    try:
-        cfg = load_project(config_path)
-    except ConfigError as e:
-        raise click.ClickException(str(e))
-
-    ctx.obj = cfg
+    ctx.obj = load_project(config_path)
 
 
 @cli.command()
@@ -66,22 +78,16 @@ def cli(ctx, config, verbose):
 )
 @pass_project
 def fetch(project, force, target):
-    try:
-        targets = ["kernel", "patches"] if target == "all" else [target]
-        for t in targets:
-            commands.fetch(cfg=project, target=t, force=force, confirm=click.confirm)  # type: ignore
-    except Exception as e:
-        raise click.ClickException(str(e))
+    targets = ["kernel", "patches"] if target == "all" else [target]
+    for t in targets:
+        commands.fetch(cfg=project, target=t, force=force, confirm=click.confirm)  # type: ignore
 
 
 @cli.command()
-@click.argument("target")
+@click.argument("target", type=click.Choice(["kernel", "patches"]))
 @pass_project
 def path(project, target):
-    try:
-        commands.path(project, target)
-    except Exception as e:
-        raise click.ClickException(str(e))
+    commands.path(project, target)
 
 
 @cli.command(
@@ -105,10 +111,7 @@ def git(project, ctx):
 )
 @pass_project
 def sync(project, message, dry_run):
-    try:
-        commands.sync(project, message, dry_run=dry_run)
-    except Exception as e:
-        raise click.ClickException(str(e))
+    commands.sync(project, message, dry_run=dry_run)
 
 
 @cli.command()
@@ -127,20 +130,17 @@ def sync(project, message, dry_run):
 @click.option("--metadata_path", "-m", help="custom path for metadata file")
 @pass_project
 def install(project, dry_run, fail_fast, on_conflict, metadata_path):
-    try:
-        resolver = (
-            resolvers[on_conflict] if on_conflict is not None else prompt_resolver
-        )
+    resolver = (
+        resolvers[on_conflict] if on_conflict is not None else prompt_resolver
+    )
 
-        commands.install(
-            cfg=project,
-            dry_run=dry_run,
-            fail_fast=fail_fast,
-            metadata_path=metadata_path,
-            resolver=resolver,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e))
+    commands.install(
+        cfg=project,
+        dry_run=dry_run,
+        fail_fast=fail_fast,
+        metadata_path=metadata_path,
+        resolver=resolver,
+    )
 
 
 def prompt_resolver(path: str) -> Action:

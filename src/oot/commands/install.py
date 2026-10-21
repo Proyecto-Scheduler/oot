@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from oot.config import Project
+from oot.errors import PatchError
 from oot.git.merge import merge3
 from oot.git.repo import Repo
 from oot.metadata import BASE_DIR, FileMetadata, Metadata
@@ -57,9 +58,8 @@ def install(
     }
 
     for file in metadata.files:
-        handler = handlers.get(file.status)
-        if handler is None:
-            raise ValueError(f"unknown status: {file.status}")
+        # status is a Literal validated by Metadata, so the lookup cannot miss
+        handler = handlers[file.status]
 
         try:
             result = handler(ctx, file)
@@ -100,11 +100,11 @@ def _install_deleted(ctx: Context, file: FileMetadata):
     # directories are not handled in order to follow git's logic
     elif dst.is_file() or dst.is_symlink():
         if not dst.resolve().is_relative_to(ctx.kernel_dir.resolve()):
-            raise RuntimeError(f"Path escapes kernel dir: {dst}")
+            raise PatchError(f"Path escapes kernel dir: {dst}")
         if not ctx.dry_run:
             dst.unlink()
     else:
-        raise RuntimeError(f"Unsupported file type for path: {dst}")
+        raise PatchError(f"Unsupported file type for path: {dst}")
 
 
 def _install_modified(ctx: Context, file: FileMetadata):
@@ -113,13 +113,13 @@ def _install_modified(ctx: Context, file: FileMetadata):
     base = ctx.patches_dir / BASE_DIR / file.path
 
     if not src.is_file():
-        raise FileNotFoundError(f"File {file.path} not found in patches repo")
+        raise PatchError(f"File {file.path} not found in patches repo")
 
     if not dst.is_file():
-        raise FileNotFoundError(f"File {file.path} not found in kernel repo")
+        raise PatchError(f"File {file.path} not found in kernel repo")
 
     if not base.is_file():
-        raise FileNotFoundError(
+        raise PatchError(
             f"Base copy for {file.path} not found; run 'oot sync' to create it"
         )
 
@@ -159,7 +159,7 @@ def _install_new(ctx: Context, file: FileMetadata):
     dst = ctx.kernel_dir / file.path
 
     if not src.is_file():
-        raise FileNotFoundError(f"patch file not found: {file.path}")
+        raise PatchError(f"patch file not found: {file.path}")
 
     if dst.exists():
         if filecmp.cmp(src, dst, shallow=False):

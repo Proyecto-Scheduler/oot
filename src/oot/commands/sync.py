@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 from oot.config import Project
+from oot.errors import PatchError
 from oot.git.repo import Repo
 from oot.metadata import BASE_DIR, FileMetadata, Metadata, metadata_path, patch_files
 
@@ -94,7 +95,7 @@ def _plan_base_copies(
             continue
         content = kernel_repo.read_blob(entry.base_blob) if entry.base_blob else None
         if content is None:
-            raise RuntimeError(
+            raise PatchError(
                 f"Cannot create base copy for {rel}: blob {entry.base_blob} "
                 f"is not in {kernel_repo.path}.\n"
                 "Fetch the kernel commit it came from (e.g. a deeper 'kernel.depth') "
@@ -121,7 +122,7 @@ def sync(cfg: Project, message: str, dry_run: bool = False):
     kernel_repo = Repo(cfg.kernel.dir, cfg.kernel.url)
 
     if not patches_repo.is_git_repo():
-        raise RuntimeError(f"{patches_dir} is not a git repository")
+        raise PatchError(f"{patches_dir} is not a git repository")
 
     meta_path = metadata_path(patches_dir)
     old = Metadata.load(meta_path) if meta_path.is_file() else None
@@ -129,7 +130,7 @@ def sync(cfg: Project, message: str, dry_run: bool = False):
     upstream = f"origin/{cfg.kernel.ref}"
     kernel_commit = kernel_repo.rev_parse(upstream)
     if kernel_commit is None:
-        raise RuntimeError(
+        raise PatchError(
             f"{upstream} not found in {kernel_repo.path}. Run 'oot fetch -t kernel'."
         )
 

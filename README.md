@@ -113,7 +113,7 @@ src/oot/
   cli.py            click entry point; loads config, maps flags to command calls
   config.py         load_project(): reads oot.yml into Project; fills and resolves repo dirs
   metadata.py       metadata.json models with load/save; patch_files() lists the patch set
-  errors.py         RepoStateError, ConfigError, FetchError
+  errors.py         OotError and subclasses: expected failures, shown without a traceback
   commands/         one module per command; no click dependency
     fetch.py
     sync.py
@@ -130,6 +130,8 @@ src/oot/
 Commands take a `Project` and plain arguments, so they can be called and tested without click. Interactive decisions are passed in as callables: `resolver` in install returns an `Action` (`force`, `skip`, `abort`), `confirm` in fetch returns a bool. The CLI passes prompting versions; `--on-conflict` passes a fixed one.
 
 All git work goes through `Repo.git(*args)`, which runs `git -C <path>` and returns the `CompletedProcess`. There is no git library dependency.
+
+Commands raise `OotError` subclasses for failures the user can fix. `OotGroup` in `cli.py` turns those, `OSError` and failed git calls (`CalledProcessError`) into a one-line error; anything else is a bug and keeps its traceback.
 
 ## Tests
 

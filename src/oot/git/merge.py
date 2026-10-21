@@ -3,6 +3,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from oot.errors import PatchError
+
 
 @dataclass
 class MergeResult:
@@ -28,6 +30,6 @@ def merge3(base: bytes, kernel: bytes, patch: bytes) -> MergeResult:
     if r.returncode == 255:
         if b"binary" in r.stderr:
             return MergeResult(content=None, conflicts=1)
-        raise RuntimeError(f"git merge-file failed:\n{r.stderr.decode(errors='replace')}")
+        raise PatchError(f"git merge-file failed:\n{r.stderr.decode(errors='replace')}")
 
     return MergeResult(content=r.stdout, conflicts=r.returncode)

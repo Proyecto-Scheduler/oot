@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from oot.errors import PatchError
+
 from oot.commands.install import install, resolvers
 from oot.config import Project, RepoConfig
 from oot.metadata import BASE_DIR
@@ -100,7 +102,7 @@ def test_install_reads_custom_metadata_path(project, dirs):
 
 
 def test_install_raises_when_metadata_missing(project):
-    with pytest.raises(FileNotFoundError, match="metadata file not found"):
+    with pytest.raises(PatchError, match="metadata file not found"):
         install(project, never_called)
 
 
@@ -288,7 +290,7 @@ def test_modified_raises_without_base_copy(project, dirs):
     write(dirs["patches"] / REL, "b\n")
     write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
 
-    with pytest.raises(FileNotFoundError, match="oot sync"):
+    with pytest.raises(PatchError, match="oot sync"):
         install(project, never_called)
 
 
@@ -297,7 +299,7 @@ def test_modified_raises_if_target_missing_in_kernel(project, dirs):
     write(dirs["patches"] / REL, "b\n")
     write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
 
-    with pytest.raises(FileNotFoundError, match="not found in kernel repo"):
+    with pytest.raises(PatchError, match="not found in kernel repo"):
         install(project, never_called)
 
 
@@ -427,7 +429,7 @@ def test_install_raises_when_patch_file_missing(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/nonexistent.c", "status": "new"}]
     )
 
-    with pytest.raises(FileNotFoundError, match="patch file not found"):
+    with pytest.raises(PatchError, match="patch file not found"):
         install(project, resolvers["abort"])
 
 

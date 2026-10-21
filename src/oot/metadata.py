@@ -1,8 +1,9 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
+from oot.errors import PatchError
 from oot.git.repo import Repo
 
 METADATA_FILE = "metadata.json"
@@ -55,8 +56,11 @@ class Metadata(BaseModel):
     @classmethod
     def load(cls, path: Path) -> "Metadata":
         if not path.is_file():
-            raise FileNotFoundError(f"metadata file not found: {path}")
-        return cls.model_validate_json(path.read_text())
+            raise PatchError(f"metadata file not found: {path}")
+        try:
+            return cls.model_validate_json(path.read_text())
+        except ValidationError as e:
+            raise PatchError(f"Invalid metadata {path}:\n{e}")
 
     def save(self, path: Path):
         path.write_text(self.model_dump_json(indent=2) + "\n")

@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from oot.errors import PatchError
+
 from oot.commands.sync import sync
 from oot.config import Project, RepoConfig
 from oot.metadata import BASE_DIR, Metadata
@@ -471,7 +473,7 @@ def test_sync_raises_without_upstream_ref(project, kernel, patches):
     git(kernel, "update-ref", "-d", "refs/remotes/origin/main")
     (patches / "x.c").write_text("x\n")
 
-    with pytest.raises(RuntimeError, match="origin/main"):
+    with pytest.raises(PatchError, match="origin/main"):
         sync(project, "no upstream")
 
 
@@ -564,7 +566,7 @@ def test_missing_base_blob_object_raises(project, kernel, patches):
     (patches / "drivers").mkdir(parents=True, exist_ok=True)
     (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
 
-    with pytest.raises(RuntimeError, match="drivers/foo.c"):
+    with pytest.raises(PatchError, match="drivers/foo.c"):
         sync(project, "no blob")
 
 
@@ -593,5 +595,5 @@ def test_sync_raises_when_patches_is_not_a_git_repo(project, tmp_path):
         patches=RepoConfig(ref="main", dir=non_repo),
     )
 
-    with pytest.raises(RuntimeError, match="not a git repository"):
+    with pytest.raises(PatchError, match="not a git repository"):
         sync(bad_project, "should fail")

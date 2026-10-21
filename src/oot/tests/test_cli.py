@@ -137,3 +137,45 @@ def test_sync_command_requires_message(setup):
     r = CliRunner().invoke(cli, ["sync"])
     assert r.exit_code == 2
     assert "Missing option" in r.output
+
+
+# --- error translation ---
+
+
+def test_expected_error_is_a_clean_message(setup, monkeypatch):
+    from oot.errors import PatchError
+
+    def boom(*a, **k):
+        raise PatchError("something the user can fix")
+
+    monkeypatch.setattr("oot.commands.install", boom)
+    r = CliRunner().invoke(cli, ["install"])
+    assert r.exit_code == 1
+    assert "Error: something the user can fix" in r.output
+    assert isinstance(r.exception, SystemExit)
+
+
+def test_git_failure_shows_command_and_stderr(setup, monkeypatch):
+    def boom(*a, **k):
+        raise subprocess.CalledProcessError(128, ["git", "commit"], stderr="fatal: no identity\n")
+
+    monkeypatch.setattr("oot.commands.sync", boom)
+    r = CliRunner().invoke(cli, ["sync", "-m", "x"])
+    assert r.exit_code == 1
+    assert "git commit" in r.output
+    assert "fatal: no identity" in r.output
+
+
+def test_programming_error_keeps_its_traceback(setup, monkeypatch):
+    def boom(*a, **k):
+        raise TypeError("a bug")
+
+    monkeypatch.setattr("oot.commands.install", boom)
+    r = CliRunner().invoke(cli, ["install"])
+    assert isinstance(r.exception, TypeError)
+
+
+def test_path_rejects_unknown_target(setup):
+    r = CliRunner().invoke(cli, ["path", "nope"])
+    assert r.exit_code == 2
+    assert "kernel" in r.output and "patches" in r.output

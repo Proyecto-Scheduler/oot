@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from oot.errors import PatchError
+
 from oot.metadata import FileMetadata, Metadata, metadata_path, patch_files
 
 
@@ -34,8 +36,15 @@ def test_load_accepts_old_base_blob_name(tmp_path):
 
 
 def test_load_raises_when_missing(tmp_path):
-    with pytest.raises(FileNotFoundError, match="metadata file not found"):
+    with pytest.raises(PatchError, match="metadata file not found"):
         Metadata.load(tmp_path / "metadata.json")
+
+
+def test_load_rejects_invalid_metadata(tmp_path):
+    p = tmp_path / "metadata.json"
+    p.write_text(json.dumps({"kernel_commit": "abc", "files": [{"path": "a.c", "status": "bogus"}]}))
+    with pytest.raises(PatchError, match="Invalid metadata"):
+        Metadata.load(p)
 
 
 def test_save_round_trips(tmp_path):
