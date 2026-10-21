@@ -124,7 +124,7 @@ src/oot/
     repo.py         Repo: thin wrapper over the git CLI via subprocess
     merge.py        merge3: 3-way merge of bytes via git merge-file
     inspect.py      filesystem helpers
-  tests/
+tests/              pytest suite; not shipped in the package
 ```
 
 Commands take a `Project` and plain arguments, so they can be called and tested without click. Interactive decisions are passed in as callables: `resolver` in install returns an `Action` (`force`, `skip`, `abort`), `confirm` in fetch returns a bool. The CLI passes prompting versions; `--on-conflict` passes a fixed one.

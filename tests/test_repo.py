@@ -211,3 +211,10 @@ def test_clone_without_force_does_not_remove_existing(tmp_path):
         repo.clone(ref="main", depth=1, force=False)
 
     assert (dest / "file").exists()
+
+
+def test_clone_failure_raises(tmp_path):
+    repo = Repo(tmp_path / "dest", "https://example.com/repo.git")
+    with patch("subprocess.run", return_value=make_result(128)):
+        with pytest.raises(FetchError, match="git clone .*repo.git failed"):
+            repo.clone(ref="main", depth=1)

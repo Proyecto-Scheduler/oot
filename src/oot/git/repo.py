@@ -41,7 +41,8 @@ class Repo:
 
         self.path.mkdir(parents=True, exist_ok=True)
 
-        return self.git(
+        # output not captured so clone progress and errors reach the terminal
+        r = self.git(
             "clone",
             "--depth",
             str(depth),
@@ -51,6 +52,10 @@ class Repo:
             self.path,
             capture_output=False,
         )
+        if r.returncode != 0:
+            raise FetchError(f"git clone {self.url} failed (exit {r.returncode})")
+
+        return r
 
     def update(self, ref: str, depth: int = 1):
         origin = self.get_origin()

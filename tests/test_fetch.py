@@ -10,7 +10,7 @@ import pytest
 
 from oot.config import Project, RepoConfig
 from oot.commands.fetch import fetch
-from oot.errors import ConfigError, RepoStateError
+from oot.errors import ConfigError, FetchError, RepoStateError
 
 
 # --- Fixtures ---
@@ -207,3 +207,10 @@ def test_fetch_no_origin_accepted_adds_origin_and_updates(project):
     fetch(project, target="kernel", force=False, confirm=lambda _: True)
 
     assert (project.kernel.dir / "README").read_text() == "hello"
+
+
+def test_fetch_raises_when_clone_fails(project, tmp_path):
+    project.kernel.url = f"file://{tmp_path}/does-not-exist.git"
+
+    with pytest.raises(FetchError, match="git clone"):
+        fetch(project, target="kernel", force=False)
