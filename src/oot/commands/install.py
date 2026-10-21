@@ -1,13 +1,15 @@
 import filecmp
 import logging
 import shutil
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from oot.config import Project
+from oot.git.merge import merge3
 from oot.git.repo import Repo
-from oot.metadata import Metadata, FileMetadata
+from oot.metadata import BASE_DIR, Metadata, FileMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +29,15 @@ resolvers = {
 }
 
 
+@dataclass
 class Context:
-    def __init__(self, repo, patches_dir, kernel_dir, resolver, dry_run):
-        self.repo = repo
-        self.patches_dir = patches_dir
-        self.kernel_dir = kernel_dir
-        self.resolve = resolver
-        self.dry_run = dry_run
+    repo: Repo
+    patches_dir: Path
+    kernel_dir: Path
+    resolve: Callable[[str], Action]
+    dry_run: bool
+    # files left with conflict markers; install does not commit when non-empty
+    conflicted: list[str] = field(default_factory=list)
 
 
 def install(
@@ -58,36 +62,41 @@ def install(
     }
 
     for file in metadata.files:
-        base_blob = file.base_blob if file.base_blob else metadata.base_blob
-
         handler = handlers.get(file.status)
         if handler is None:
             raise ValueError(f"unknown status: {file.status}")
 
         try:
-            result = handler(ctx, file, base_blob)
+            result = handler(ctx, file)
 
             if result == Action.SKIP:
                 logger.info("Skipping %s", file.path)
-                continue
             elif result == Action.ABORT:
                 logger.info("Aborting install")
-                return
-
-            ctx.repo.git("add", "-A")
-            ctx.repo.git("commit", "-m", "chore: installed patches to kernel")
+                break
 
         except Exception as e:
             if fail_fast:
                 raise
             logger.error("Failed processing %s: %s", file.path, e)
 
+    if ctx.dry_run:
+        return
 
-def _install_deleted(
-    ctx: Context,
-    file: FileMetadata,
-    _: str,
-):
+    if ctx.conflicted:
+        logger.warning(
+            "Conflict markers left in:\n  %s\nResolve them and commit in %s.",
+            "\n  ".join(ctx.conflicted),
+            ctx.kernel_dir,
+        )
+        return
+
+    ctx.repo.git("add", "-A", check=True)
+    if ctx.repo.git("diff", "--cached", "--quiet").returncode != 0:
+        ctx.repo.git("commit", "-m", "chore: installed patches to kernel", check=True)
+
+
+def _install_deleted(ctx: Context, file: FileMetadata):
     dst = ctx.kernel_dir / file.path
 
     if not dst.exists():
@@ -97,18 +106,16 @@ def _install_deleted(
     elif dst.is_file() or dst.is_symlink():
         if not dst.resolve().is_relative_to(ctx.kernel_dir.resolve()):
             raise RuntimeError(f"Path escapes kernel dir: {dst}")
-        dst.unlink()
+        if not ctx.dry_run:
+            dst.unlink()
     else:
         raise RuntimeError(f"Unsupported file type for path: {dst}")
 
 
-def _install_modified(
-    ctx: Context,
-    file: FileMetadata,
-    base_blob: str,
-):
+def _install_modified(ctx: Context, file: FileMetadata):
     src = ctx.patches_dir / file.path
     dst = ctx.kernel_dir / file.path
+    base = ctx.patches_dir / BASE_DIR / file.path
 
     if not src.is_file():
         raise FileNotFoundError(f"File {file.path} not found in patches repo")
@@ -116,31 +123,43 @@ def _install_modified(
     if not dst.is_file():
         raise FileNotFoundError(f"File {file.path} not found in kernel repo")
 
-    diff = ctx.repo.get_diff(base_blob, src, file.path)
+    if not base.is_file():
+        raise FileNotFoundError(
+            f"Base copy for {file.path} not found; run 'oot sync' to create it"
+        )
 
-    if not diff.strip():
-        logger.debug("No diff for %s, skipping", file.path)
-        return
+    current = dst.read_bytes()
+    result = merge3(base.read_bytes(), current, src.read_bytes())
 
-    # Check conflicts first
-    r = ctx.repo.apply(diff, dry_run=ctx.dry_run)
-    if r.returncode != 0:
+    if result.conflicts:
+        if ctx.dry_run:
+            logger.warning("Would conflict: %s", file.path)
+            return
+
         action = ctx.resolve(file.path)
-
         if action == Action.SKIP or action == Action.ABORT:
             return action
 
-        if not ctx.dry_run:
-            r = ctx.repo.apply(diff)
-            if r.returncode != 0:
-                raise RuntimeError(f"force apply failed for {file.path}:\n{r.stderr}")
+        if result.content is None:
+            # binary: no markers possible, force means "take the patches copy"
+            content = src.read_bytes()
+        else:
+            content = result.content
+            ctx.conflicted.append(file.path)
+    else:
+        content = result.content
+
+    if content == current:
+        logger.debug("Already applied: %s", file.path)
+        return
+
+    if not ctx.dry_run:
+        dst.write_bytes(content)
+
+    logger.debug("Installed %s", file.path)
 
 
-def _install_new(
-    ctx: Context,
-    file: FileMetadata,
-    _: str,
-):
+def _install_new(ctx: Context, file: FileMetadata):
     src = ctx.patches_dir / file.path
     dst = ctx.kernel_dir / file.path
 
@@ -150,6 +169,10 @@ def _install_new(
     if dst.exists():
         if filecmp.cmp(src, dst, shallow=False):
             logger.debug("File identical, skipping: %s", file.path)
+            return
+
+        if ctx.dry_run:
+            logger.warning("Would conflict: %s", file.path)
             return
 
         action = ctx.resolve(file.path)

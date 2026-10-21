@@ -14,7 +14,7 @@ import pytest
 
 from oot.commands.sync import sync
 from oot.config import Project, RepoConfig
-from oot.metadata import Metadata
+from oot.metadata import BASE_DIR, Metadata
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +87,8 @@ def kernel(tmp_path):
             "Makefile": "all:\n\t@echo done\n",
         },
     )
+    # sync reads upstream (origin/<ref>), not HEAD
+    git(kdir, "update-ref", "refs/remotes/origin/main", "HEAD")
     return kdir
 
 
@@ -165,16 +167,16 @@ def test_file_identical_to_kernel_is_not_in_metadata(project, kernel, patches):
     assert "drivers/foo.c" not in paths
 
 
-def test_metadata_base_blob_is_kernel_head(project, kernel, patches):
-    """The top-level base_blob must equal the current kernel HEAD."""
+def test_metadata_kernel_commit_is_upstream(project, kernel, patches):
+    """The top-level kernel_commit must equal origin/<ref>."""
     (patches / "drivers").mkdir(parents=True, exist_ok=True)
     (patches / "drivers" / "extra.c").write_text("new\n")
 
     sync(project, "snapshot")
 
-    expected = git(kernel, "rev-parse", "HEAD").stdout.strip()
+    expected = git(kernel, "rev-parse", "origin/main").stdout.strip()
     meta = read_metadata(patches)
-    assert meta.base_blob == expected
+    assert meta.kernel_commit == expected
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +304,7 @@ def test_dry_run_prints_metadata_json(project, kernel, patches, capsys):
 
     captured = capsys.readouterr().out
     parsed = json.loads(captured)
-    assert "base_blob" in parsed
+    assert "kernel_commit" in parsed
     assert "files" in parsed
 
 
@@ -440,6 +442,139 @@ def test_sync_handles_multiple_files(project, kernel, patches):
     assert by_path["drivers/new.c"].status == "new"
     assert by_path["drivers/bar.c"].status == "modified"
     assert by_path["drivers/foo.c"].status == "deleted"
+
+
+# ---------------------------------------------------------------------------
+# Upstream, not HEAD
+# ---------------------------------------------------------------------------
+
+
+def commit_to_kernel_head(kernel: Path, rel: str, content: str):
+    """Simulate oot install: commit on HEAD without moving origin/main."""
+    (kernel / rel).write_text(content)
+    git(kernel, "commit", "-am", "installed patches")
+
+
+def test_sync_after_install_still_records_modified(project, kernel, patches):
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+    commit_to_kernel_head(kernel, "drivers/foo.c", "int foo() { return 42; }\n")
+
+    sync(project, "after install")
+
+    entry = next(f for f in read_metadata(patches).files if f.path == "drivers/foo.c")
+    assert entry.status == "modified"
+    assert (patches / BASE_DIR / "drivers/foo.c").read_text() == "int foo() { return 0; }\n"
+
+
+def test_sync_raises_without_upstream_ref(project, kernel, patches):
+    git(kernel, "update-ref", "-d", "refs/remotes/origin/main")
+    (patches / "x.c").write_text("x\n")
+
+    with pytest.raises(RuntimeError, match="origin/main"):
+        sync(project, "no upstream")
+
+
+# ---------------------------------------------------------------------------
+# Base copies
+# ---------------------------------------------------------------------------
+
+
+def test_modified_file_gets_base_copy_of_upstream(project, kernel, patches):
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+
+    sync(project, "patch foo.c")
+
+    base = patches / BASE_DIR / "drivers/foo.c"
+    assert base.read_text() == "int foo() { return 0; }\n"
+    assert ".oot/base/drivers/foo.c" in git(patches, "ls-files").stdout.splitlines()
+
+
+def test_base_copies_are_not_patches(project, kernel, patches):
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+    sync(project, "first")
+    sync(project, "second")
+
+    assert all(not f.path.startswith(".oot") for f in read_metadata(patches).files)
+
+
+def test_base_copy_kept_when_upstream_moves(project, kernel, patches):
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+    sync(project, "first")
+    original_blob = kernel_blob(kernel, "drivers/foo.c")
+
+    (kernel / "drivers" / "foo.c").write_text("int foo() { return -1; }\n")
+    git(kernel, "commit", "-am", "upstream change")
+    git(kernel, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 99; }\n")
+    sync(project, "second")
+
+    entry = next(f for f in read_metadata(patches).files if f.path == "drivers/foo.c")
+    assert entry.base_blob == original_blob
+    assert (patches / BASE_DIR / "drivers/foo.c").read_text() == "int foo() { return 0; }\n"
+
+
+def test_base_copy_removed_when_file_matches_upstream_again(project, kernel, patches):
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+    sync(project, "modify")
+
+    (patches / "drivers" / "foo.c").write_text((kernel / "drivers" / "foo.c").read_text())
+    sync(project, "restore")
+
+    assert not (patches / BASE_DIR / "drivers/foo.c").exists()
+
+
+def test_base_copy_removed_when_file_becomes_deleted(project, kernel, patches):
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+    sync(project, "modify")
+
+    (patches / "drivers" / "foo.c").unlink()
+    sync(project, "delete")
+
+    assert not (patches / BASE_DIR / "drivers/foo.c").exists()
+
+
+def test_missing_base_copy_is_backfilled_from_recorded_blob(project, kernel, patches):
+    """Old metadata (no base copies) gets them on the next sync."""
+    blob = kernel_blob(kernel, "drivers/foo.c")
+    write_metadata(
+        patches,
+        git(kernel, "rev-parse", "HEAD").stdout.strip(),
+        [{"path": "drivers/foo.c", "base_blob": blob, "status": "modified"}],
+    )
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+
+    sync(project, "backfill")
+
+    assert (patches / BASE_DIR / "drivers/foo.c").read_text() == "int foo() { return 0; }\n"
+
+
+def test_missing_base_blob_object_raises(project, kernel, patches):
+    write_metadata(
+        patches,
+        git(kernel, "rev-parse", "HEAD").stdout.strip(),
+        [{"path": "drivers/foo.c", "base_blob": "0" * 40, "status": "modified"}],
+    )
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+
+    with pytest.raises(RuntimeError, match="drivers/foo.c"):
+        sync(project, "no blob")
+
+
+def test_dry_run_does_not_write_base_copies(project, kernel, patches, capsys):
+    (patches / "drivers").mkdir(parents=True, exist_ok=True)
+    (patches / "drivers" / "foo.c").write_text("int foo() { return 42; }\n")
+
+    sync(project, "dry", dry_run=True)
+
+    assert not (patches / BASE_DIR).exists()
 
 
 # ---------------------------------------------------------------------------

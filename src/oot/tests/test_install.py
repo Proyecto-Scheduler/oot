@@ -1,22 +1,29 @@
 """
 Tests for the install command.
 
-Repo.get_diff y Repo.apply están mockeados — la lógica de install se testea en aislamiento.
+The kernel dir is a real git repo and files are real; only the resolver is stubbed.
 """
 
 import json
+import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from oot.commands.install import install, get_metadata, resolvers
 from oot.config import Project, RepoConfig
+from oot.metadata import BASE_DIR
 
 
 # ---------------------------------------------------------------------------
 # Helpers / Fixtures
 # ---------------------------------------------------------------------------
+
+
+def git(path: Path, *args) -> str:
+    r = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
 
 
 @pytest.fixture
@@ -25,6 +32,10 @@ def dirs(tmp_path):
     patches = tmp_path / "patches"
     kernel.mkdir()
     patches.mkdir()
+    git(kernel, "init")
+    git(kernel, "config", "user.email", "test@example.com")
+    git(kernel, "config", "user.name", "Test")
+    git(kernel, "commit", "--allow-empty", "-m", "initial")
     return {"kernel": kernel, "patches": patches, "tmp": tmp_path}
 
 
@@ -48,24 +59,30 @@ def write_metadata(patches_dir: Path, base_blob: str, files: list[dict]) -> Path
     return path
 
 
-def make_apply_result(returncode: int = 0, stderr: str = ""):
-    r = MagicMock()
-    r.returncode = returncode
-    r.stderr = stderr
-    return r
+def write(path: Path, content: str | bytes):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        path.write_text(content)
 
 
-def mock_repo(diff: str = "--- diff ---", apply_rc: int = 0):
-    """
-    Devuelve un mock de Repo.
+def commit_count(kernel: Path) -> int:
+    return int(git(kernel, "rev-list", "--count", "HEAD"))
 
-    - get_diff devuelve `diff`
-    - apply devuelve un resultado con returncode=apply_rc en todas las llamadas
-    """
-    m = MagicMock()
-    m.get_diff.return_value = diff
-    m.apply.return_value = make_apply_result(apply_rc)
-    return m
+
+def never_called(path):
+    raise AssertionError(f"resolver called for {path}")
+
+
+REL = "sys/kern/kern_sched.c"
+
+
+def modified(dirs, base, kernel, patch, rel=REL):
+    """Set up one modified file: base copy, current kernel file and patches copy."""
+    write(dirs["patches"] / BASE_DIR / rel, base)
+    write(dirs["kernel"] / rel, kernel)
+    write(dirs["patches"] / rel, patch)
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +95,7 @@ def test_get_metadata_reads_default_path(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/foo.c", "status": "new"}]
     )
     meta = get_metadata(project, None)
-    assert meta.base_blob == "abc123"
+    assert meta.kernel_commit == "abc123"
     assert len(meta.files) == 1
 
 
@@ -86,7 +103,7 @@ def test_get_metadata_reads_custom_path(project, dirs):
     custom = dirs["tmp"] / "custom_meta.json"
     custom.write_text(json.dumps({"base_blob": "xyz", "files": []}))
     meta = get_metadata(project, str(custom))
-    assert meta.base_blob == "xyz"
+    assert meta.kernel_commit == "xyz"
 
 
 def test_get_metadata_raises_when_missing(project):
@@ -131,8 +148,7 @@ def test_install_copies_new_file(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/sched_petri.c", "status": "new"}]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["abort"])
+    install(project, resolvers["abort"])
 
     dst = dirs["kernel"] / "sys" / "kern" / "sched_petri.c"
     assert dst.exists()
@@ -148,8 +164,7 @@ def test_install_creates_parent_dirs(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/sys/petri_net.h", "status": "new"}]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["abort"])
+    install(project, resolvers["abort"])
 
     assert (dirs["kernel"] / "sys" / "sys" / "petri_net.h").exists()
 
@@ -168,8 +183,7 @@ def test_install_skips_new_file_if_identical_exists(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/sched_petri.c", "status": "new"}]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["abort"])
+    install(project, resolvers["abort"])
 
     assert dst.read_text() == content
 
@@ -183,8 +197,7 @@ def test_install_new_file_dry_run_does_not_copy(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/sched_petri.c", "status": "new"}]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["abort"], dry_run=True)
+    install(project, resolvers["abort"], dry_run=True)
 
     assert not (dirs["kernel"] / "sys" / "kern" / "sched_petri.c").exists()
 
@@ -207,8 +220,7 @@ def test_install_new_conflict_resolver_skip(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/sched_petri.c", "status": "new"}]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["skip"])
+    install(project, resolvers["skip"])
 
     assert dst.read_text() == "// old version\n"
 
@@ -226,8 +238,7 @@ def test_install_new_conflict_resolver_force_overwrites(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/sched_petri.c", "status": "new"}]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["force"])
+    install(project, resolvers["force"])
 
     assert dst.read_text() == "// new version\n"
 
@@ -251,285 +262,166 @@ def test_install_new_conflict_resolver_abort_stops_install(project, dirs):
         ],
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["abort"])
+    install(project, resolvers["abort"])
 
     assert not (dirs["kernel"] / "sys" / "kern" / "file_b.c").exists()
 
 
 # ---------------------------------------------------------------------------
-# status=modified — happy path
+# status=modified
 # ---------------------------------------------------------------------------
 
 
-def test_install_applies_diff_for_modified_file(project, dirs):
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// modified version\n")
+def test_modified_clean_merge_keeps_upstream_and_patch(project, dirs):
+    modified(dirs, base="a\nb\nc\n", kernel="A\nb\nc\n", patch="a\nb\nC\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
 
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
+    install(project, never_called)
 
-    write_metadata(
-        dirs["patches"],
-        "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
-    )
-
-    repo = mock_repo(diff="--- a\n+++ b\n-original\n+modified\n")
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["abort"])
-
-    repo.apply.assert_called_once_with(
-        "--- a\n+++ b\n-original\n+modified\n", dry_run=False
-    )
+    assert (dirs["kernel"] / REL).read_text() == "A\nb\nC\n"
 
 
-def test_install_uses_file_base_blob_over_metadata_blob(project, dirs):
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// modified\n")
+def test_modified_already_applied_is_left_alone(project, dirs):
+    modified(dirs, base="a\n", kernel="b\n", patch="b\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
 
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
+    install(project, never_called)
 
-    write_metadata(
-        dirs["patches"],
-        "global_blob",
-        [
-            {
-                "path": "sys/kern/kern_sched.c",
-                "status": "modified",
-                "base_blob": "file_blob",
-            }
-        ],
-    )
-
-    repo = mock_repo()
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["abort"])
-
-    repo.get_diff.assert_called_once_with("file_blob", src, "sys/kern/kern_sched.c")
+    assert (dirs["kernel"] / REL).read_text() == "b\n"
 
 
-def test_install_uses_metadata_blob_when_file_has_none(project, dirs):
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// modified\n")
+def test_modified_raises_without_base_copy(project, dirs):
+    write(dirs["kernel"] / REL, "a\n")
+    write(dirs["patches"] / REL, "b\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
 
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
-
-    write_metadata(
-        dirs["patches"],
-        "global_blob",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
-    )
-
-    repo = mock_repo()
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["abort"])
-
-    repo.get_diff.assert_called_once_with("global_blob", src, "sys/kern/kern_sched.c")
+    with pytest.raises(FileNotFoundError, match="oot sync"):
+        install(project, never_called)
 
 
-def test_install_skips_modified_when_diff_is_empty(project, dirs):
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// same\n")
+def test_modified_raises_if_target_missing_in_kernel(project, dirs):
+    write(dirs["patches"] / BASE_DIR / REL, "a\n")
+    write(dirs["patches"] / REL, "b\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
 
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// same\n")
-
-    write_metadata(
-        dirs["patches"],
-        "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
-    )
-
-    repo = mock_repo(diff="   ")
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["abort"])
-
-    repo.apply.assert_not_called()
+    with pytest.raises(FileNotFoundError, match="not found in kernel repo"):
+        install(project, never_called)
 
 
-def test_install_raises_if_modified_target_missing_in_kernel(project, dirs):
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// modified\n")
+def test_modified_conflict_skip_leaves_kernel_file(project, dirs):
+    modified(dirs, base="a\n", kernel="upstream\n", patch="mine\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
 
-    write_metadata(
-        dirs["patches"],
-        "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
-    )
+    install(project, resolvers["skip"])
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        with pytest.raises(FileNotFoundError, match="not found in kernel repo"):
-            install(project, resolvers["abort"])
+    assert (dirs["kernel"] / REL).read_text() == "upstream\n"
 
 
-def test_install_modified_dry_run_calls_apply_with_dry_run(project, dirs):
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// modified\n")
-
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
-
-    write_metadata(
-        dirs["patches"],
-        "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
-    )
-
-    repo = mock_repo()
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["abort"], dry_run=True)
-
-    repo.apply.assert_called_once_with("--- diff ---", dry_run=True)
-
-
-# ---------------------------------------------------------------------------
-# status=modified — conflictos
-# ---------------------------------------------------------------------------
-
-
-def test_install_modified_conflict_resolver_skip(project, dirs):
-    """apply falla + resolver skip → no se reintenta."""
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// patch\n")
-
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
-
-    write_metadata(
-        dirs["patches"],
-        "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
-    )
-
-    repo = mock_repo(apply_rc=1)
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["skip"])
-
-    repo.apply.assert_called_once()
-
-
-def test_install_modified_conflict_resolver_abort(project, dirs):
-    """apply falla + resolver abort → install se detiene sin procesar más archivos."""
-    for name in ["kern_sched.c", "vm_pager.c"]:
-        src = dirs["patches"] / "sys" / "kern" / name
-        src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_text("// patch\n")
-        dst = dirs["kernel"] / "sys" / "kern" / name
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text("// original\n")
-
+def test_modified_conflict_abort_stops_install(project, dirs):
+    modified(dirs, base="a\n", kernel="upstream\n", patch="mine\n")
+    write(dirs["patches"] / "sys/kern/later.c", "new\n")
     write_metadata(
         dirs["patches"],
         "abc123",
         [
-            {"path": "sys/kern/kern_sched.c", "status": "modified"},
-            {"path": "sys/kern/vm_pager.c", "status": "modified"},
+            {"path": REL, "status": "modified"},
+            {"path": "sys/kern/later.c", "status": "new"},
         ],
     )
 
-    # Solo el primer apply falla
-    results = [make_apply_result(1), make_apply_result(0)]
-    repo = MagicMock()
-    repo.get_diff.return_value = "--- diff ---"
-    repo.apply.side_effect = results
+    install(project, resolvers["abort"])
 
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["abort"])
-
-    repo.apply.assert_called_once()
+    assert not (dirs["kernel"] / "sys/kern/later.c").exists()
 
 
-def test_install_modified_conflict_resolver_force_retries_apply(project, dirs):
-    """apply falla + resolver force → se reintenta apply sin dry_run."""
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// patch\n")
+def test_modified_conflict_force_writes_markers_and_does_not_commit(project, dirs):
+    modified(dirs, base="a\n", kernel="upstream\n", patch="mine\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
+    before = commit_count(dirs["kernel"])
 
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
+    install(project, resolvers["force"])
 
+    content = (dirs["kernel"] / REL).read_text()
+    assert "<<<<<<< kernel" in content
+    assert "upstream" in content and "mine" in content
+    assert commit_count(dirs["kernel"]) == before
+
+
+def test_modified_binary_conflict_force_takes_patch_copy(project, dirs):
+    modified(dirs, base=b"a\0b", kernel=b"a\0c", patch=b"a\0d")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
+
+    install(project, resolvers["force"])
+
+    assert (dirs["kernel"] / REL).read_bytes() == b"a\0d"
+
+
+def test_modified_dry_run_reports_conflict_without_prompting(project, dirs):
+    modified(dirs, base="a\n", kernel="upstream\n", patch="mine\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
+
+    install(project, never_called, dry_run=True)
+
+    assert (dirs["kernel"] / REL).read_text() == "upstream\n"
+
+
+def test_modified_dry_run_does_not_write(project, dirs):
+    modified(dirs, base="a\nx\nb\n", kernel="A\nx\nb\n", patch="a\nx\nB\n")
+    write_metadata(dirs["patches"], "abc123", [{"path": REL, "status": "modified"}])
+
+    install(project, never_called, dry_run=True)
+
+    assert (dirs["kernel"] / REL).read_text() == "A\nx\nb\n"
+
+
+# ---------------------------------------------------------------------------
+# Commits
+# ---------------------------------------------------------------------------
+
+
+def test_install_commits_once_for_all_files(project, dirs):
+    modified(dirs, base="a\nx\nb\n", kernel="A\nx\nb\n", patch="a\nx\nB\n")
+    write(dirs["patches"] / "sys/kern/new.c", "new\n")
     write_metadata(
         dirs["patches"],
         "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
+        [
+            {"path": REL, "status": "modified"},
+            {"path": "sys/kern/new.c", "status": "new"},
+        ],
     )
+    before = commit_count(dirs["kernel"])
 
-    results = [make_apply_result(1), make_apply_result(0)]
-    repo = MagicMock()
-    repo.get_diff.return_value = "--- diff ---"
-    repo.apply.side_effect = results
+    install(project, never_called)
 
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["force"])
-
-    assert repo.apply.call_count == 2
-    assert repo.apply.call_args_list == [
-        call("--- diff ---", dry_run=False),
-        call("--- diff ---"),
-    ]
+    assert commit_count(dirs["kernel"]) == before + 1
+    assert git(dirs["kernel"], "status", "--porcelain") == ""
 
 
-def test_install_modified_force_retry_failure_raises(project, dirs):
-    """apply falla + force + reintento también falla → RuntimeError."""
-    filePath = Path("sys") / "kern" / "kern_sched.c"
-    src = dirs["patches"] / filePath
-    src.parent.mkdir(parents=True)
-    src.write_text("// patch\n")
-
-    dst = dirs["kernel"] / filePath
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
-
+def test_install_dry_run_does_not_commit(project, dirs):
+    write(dirs["patches"] / "sys/kern/new.c", "new\n")
     write_metadata(
-        dirs["patches"],
-        "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
+        dirs["patches"], "abc123", [{"path": "sys/kern/new.c", "status": "new"}]
     )
+    before = commit_count(dirs["kernel"])
 
-    repo = mock_repo(apply_rc=1)
-    with patch("oot.commands.install.Repo", return_value=repo):
-        with pytest.raises(RuntimeError, match=r"force apply failed for .*"):
-            install(project, resolvers["force"])
+    install(project, never_called, dry_run=True)
+
+    assert commit_count(dirs["kernel"]) == before
 
 
-def test_install_modified_dry_run_conflict_does_not_retry(project, dirs):
-    """En dry_run, apply falla pero no se reintenta aunque el resolver sea force."""
-    src = dirs["patches"] / "sys" / "kern" / "kern_sched.c"
-    src.parent.mkdir(parents=True)
-    src.write_text("// patch\n")
-
-    dst = dirs["kernel"] / "sys" / "kern" / "kern_sched.c"
-    dst.parent.mkdir(parents=True)
-    dst.write_text("// original\n")
-
+def test_install_new_file_dry_run_does_not_prompt(project, dirs):
+    write(dirs["patches"] / "sys/kern/new.c", "mine\n")
+    write(dirs["kernel"] / "sys/kern/new.c", "theirs\n")
     write_metadata(
-        dirs["patches"],
-        "abc123",
-        [{"path": "sys/kern/kern_sched.c", "status": "modified"}],
+        dirs["patches"], "abc123", [{"path": "sys/kern/new.c", "status": "new"}]
     )
 
-    repo = mock_repo(apply_rc=1)
-    with patch("oot.commands.install.Repo", return_value=repo):
-        install(project, resolvers["force"], dry_run=True)
+    install(project, never_called, dry_run=True)
 
-    repo.apply.assert_called_once_with("--- diff ---", dry_run=True)
+    assert (dirs["kernel"] / "sys/kern/new.c").read_text() == "theirs\n"
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -542,9 +434,8 @@ def test_install_raises_when_patch_file_missing(project, dirs):
         dirs["patches"], "abc123", [{"path": "sys/kern/nonexistent.c", "status": "new"}]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        with pytest.raises(FileNotFoundError, match="patch file not found"):
-            install(project, resolvers["abort"])
+    with pytest.raises(FileNotFoundError, match="patch file not found"):
+        install(project, resolvers["abort"])
 
 
 # ---------------------------------------------------------------------------
@@ -574,9 +465,8 @@ def test_install_fail_fast_stops_on_first_error(project, dirs):
     dst_a.parent.mkdir(parents=True, exist_ok=True)
     dst_a.write_text("// different\n")
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        with pytest.raises(RuntimeError):
-            install(project, exploding_resolver, fail_fast=True)
+    with pytest.raises(RuntimeError):
+        install(project, exploding_resolver, fail_fast=True)
 
     assert not (dirs["kernel"] / "sys" / "kern" / "file_b.c").exists()
 
@@ -605,10 +495,7 @@ def test_install_no_fail_fast_continues_on_error(project, dirs, caplog):
     dst_a.parent.mkdir(parents=True, exist_ok=True)
     dst_a.write_text("// different\n")
 
-    with (
-        patch("oot.commands.install.Repo", return_value=mock_repo()),
-        caplog.at_level(logging.ERROR, logger="oot.commands.install"),
-    ):
+    with caplog.at_level(logging.ERROR, logger="oot.commands.install"):
         install(project, exploding_resolver, fail_fast=False)
 
     assert (dirs["kernel"] / "sys" / "kern" / "file_b.c").exists()
@@ -634,8 +521,7 @@ def test_install_processes_all_files(project, dirs):
         dirs["patches"], "abc123", [{"path": p, "status": s} for p, s in files]
     )
 
-    with patch("oot.commands.install.Repo", return_value=mock_repo()):
-        install(project, resolvers["abort"])
+    install(project, resolvers["abort"])
 
     for path, _ in files:
         assert (dirs["kernel"] / path).exists()
