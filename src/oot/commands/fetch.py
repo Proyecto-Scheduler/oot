@@ -1,8 +1,5 @@
 import logging
-from pathlib import Path
-from typing import Literal
-
-import click
+from typing import Callable, Literal
 
 from oot.config import Project
 from oot.errors import RepoStateError
@@ -11,11 +8,14 @@ from oot.git import Repo, is_empty_dir
 logger = logging.getLogger(__name__)
 
 
-def fetch(cfg: Project, target: Literal["kernel", "patches"], force: bool):
+def fetch(
+    cfg: Project,
+    target: Literal["kernel", "patches"],
+    force: bool,
+    confirm: Callable[[str], bool] = lambda _: False,
+):
     target_cfg = getattr(cfg, target)
 
-    assert target_cfg.dir is not None
-    assert isinstance(target_cfg.dir, Path)
     repo = Repo(target_cfg.dir, target_cfg.url)
 
     if force:
@@ -23,7 +23,7 @@ def fetch(cfg: Project, target: Literal["kernel", "patches"], force: bool):
 
     if repo.is_git_repo():
         if repo.get_origin() is None:
-            if click.confirm(
+            if confirm(
                 f"\n {repo} is a git repo with no remote origin.\n"
                 f"  Do you want to add {repo.url} as origin and continue?"
             ):

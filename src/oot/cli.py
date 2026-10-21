@@ -1,21 +1,36 @@
 import logging
-import os
+import shlex
+import subprocess
 from pathlib import Path
-from typing import Literal
 
 import click
-import yaml
 
 import oot.commands as commands
-from oot.commands.install import resolvers
-from oot.config import Project
+from oot.commands.install import Action, resolvers
+from oot.config import Project, load_project
+from oot.errors import OotError
 
 logger = logging.getLogger("oot")
 pass_project = click.make_pass_decorator(Project)
 
 
-@click.group()
-@click.version_option("1.0")
+class OotGroup(click.Group):
+    """Turns expected failures into one-line errors; anything else keeps its traceback."""
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (OotError, OSError) as e:
+            raise click.ClickException(str(e))
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else e.stderr
+            raise click.ClickException(
+                f"`{shlex.join(map(str, e.cmd))}` failed:\n{(stderr or '').strip()}"
+            )
+
+
+@click.group(cls=OotGroup)
+@click.version_option(package_name="oot")
 @click.pass_context
 @click.option(
     "--config",
@@ -30,54 +45,21 @@ def cli(ctx, config, verbose):
 
     if verbose == 1:
         level = logging.INFO
-    if verbose == 2:
+    if verbose >= 2:
         level = logging.DEBUG
 
     logging.basicConfig(level=level, format="%(message)s")
 
-    default_path = Path("./oot.yml")
     config_path = Path(config)
 
-    if not config_path.exists():
-        if config_path == default_path:
-            raise click.ClickException(
-                "No config file found.\n"
-                "Expected default at ./oot.yml\n\n"
-                "Use --config to specify a custom file."
-            )
-        else:
-            raise click.ClickException(f"Config file not found: {config_path}")
-
-    try:
-        with open(config) as cfg:
-            data = yaml.safe_load(cfg)
-    except Exception as e:
-        raise click.ClickException(f"Failed to read config: {e}")
-
-    cfg = Project.model_validate(data)
-
-    cfg.dir = Path(cfg.dir).expanduser().resolve()
-
-    cfg.patches.dir = (
-        Path(
-            cfg.patches.dir
-            if cfg.patches.dir is not None
-            else os.path.join(cfg.dir, "patches")
+    if not config_path.exists() and config_path == Path("./oot.yml"):
+        raise click.ClickException(
+            "No config file found.\n"
+            "Expected default at ./oot.yml\n\n"
+            "Use --config to specify a custom file."
         )
-        .expanduser()
-        .resolve()
-    )
-    cfg.kernel.dir = (
-        Path(
-            cfg.kernel.dir
-            if cfg.kernel.dir is not None
-            else os.path.join(cfg.dir, "kernel")
-        )
-        .expanduser()
-        .resolve()
-    )
 
-    ctx.obj = cfg
+    ctx.obj = load_project(config_path)
 
 
 @cli.command()
@@ -96,22 +78,16 @@ def cli(ctx, config, verbose):
 )
 @pass_project
 def fetch(project, force, target):
-    try:
-        targets = ["kernel", "patches"] if target == "all" else [target]
-        for t in targets:
-            commands.fetch(cfg=project, target=t, force=force)  # type: ignore
-    except Exception as e:
-        raise click.ClickException(str(e))
+    targets = ["kernel", "patches"] if target == "all" else [target]
+    for t in targets:
+        commands.fetch(cfg=project, target=t, force=force, confirm=click.confirm)  # type: ignore
 
 
 @cli.command()
-@click.argument("target")
+@click.argument("target", type=click.Choice(["kernel", "patches"]))
 @pass_project
 def path(project, target):
-    try:
-        commands.path(project, target)
-    except Exception as e:
-        raise click.ClickException(str(e))
+    commands.path(project, target)
 
 
 @cli.command(
@@ -123,7 +99,19 @@ def path(project, target):
 @click.pass_context
 @pass_project
 def git(project, ctx):
-    commands.git(project, ctx.args)
+    ctx.exit(commands.git(project, ctx.args))
+
+
+@cli.command()
+@click.option("--message", "-m", required=True, help="commit message for the patches repo")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="print the new metadata without writing or committing",
+)
+@pass_project
+def sync(project, message, dry_run):
+    commands.sync(project, message, dry_run=dry_run)
 
 
 @cli.command()
@@ -137,31 +125,30 @@ def git(project, ctx):
 @click.option(
     "--on-conflict",
     help="default action to take when a conflict is detected",
-    type=click.Choice(["abort", "force", "skip"]),
+    type=click.Choice([a.value for a in Action]),
 )
 @click.option("--metadata_path", "-m", help="custom path for metadata file")
 @pass_project
 def install(project, dry_run, fail_fast, on_conflict, metadata_path):
-    try:
-        resolver = (
-            resolvers[on_conflict] if on_conflict is not None else prompt_resolver
-        )
+    resolver = (
+        resolvers[on_conflict] if on_conflict is not None else prompt_resolver
+    )
 
-        commands.install(
-            cfg=project,
-            dry_run=dry_run,
-            fail_fast=fail_fast,
-            metadata_path=metadata_path,
-            resolver=resolver,
-        )
-    except Exception as e:
-        raise click.ClickException(str(e))
+    commands.install(
+        cfg=project,
+        dry_run=dry_run,
+        fail_fast=fail_fast,
+        metadata_path=metadata_path,
+        resolver=resolver,
+    )
 
 
-def prompt_resolver(path: str) -> Literal["abort", "skip", "force"]:
+def prompt_resolver(path: str) -> Action:
     click.echo(f"\n  ! {path} has local changes on top of the applied patch.")
-    return click.prompt(
-        "    What do you want to do?",
-        type=click.Choice(["force", "skip", "abort"]),
-        default="abort",
+    return Action(
+        click.prompt(
+            "    What do you want to do?",
+            type=click.Choice([a.value for a in Action]),
+            default=Action.ABORT.value,
+        )
     )

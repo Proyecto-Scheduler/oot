@@ -10,7 +10,7 @@ import pytest
 
 from oot.config import Project, RepoConfig
 from oot.commands.fetch import fetch
-from oot.errors import ConfigError, RepoStateError
+from oot.errors import ConfigError, FetchError, RepoStateError
 
 
 # --- Fixtures ---
@@ -179,3 +179,38 @@ def test_fetch_force_overwrites_existing(project):
 def test_fetch_force_on_missing_dir(project):
     fetch(project, target="kernel", force=True)
     assert (project.kernel.dir / ".git").exists()
+
+
+# --- fetch: git repo without origin → confirm ---
+
+
+def no_origin_repo(path: Path) -> Path:
+    path.mkdir()
+    git("init", "-b", "main", str(path))
+    return path
+
+
+def test_fetch_no_origin_declined_leaves_repo_alone(project):
+    no_origin_repo(project.kernel.dir)
+    asked = []
+
+    fetch(project, target="kernel", force=False, confirm=lambda msg: asked.append(msg) or False)
+
+    assert len(asked) == 1
+    r = subprocess.run(["git", "-C", str(project.kernel.dir), "remote"], capture_output=True, text=True)
+    assert r.stdout.strip() == ""
+
+
+def test_fetch_no_origin_accepted_adds_origin_and_updates(project):
+    no_origin_repo(project.kernel.dir)
+
+    fetch(project, target="kernel", force=False, confirm=lambda _: True)
+
+    assert (project.kernel.dir / "README").read_text() == "hello"
+
+
+def test_fetch_raises_when_clone_fails(project, tmp_path):
+    project.kernel.url = f"file://{tmp_path}/does-not-exist.git"
+
+    with pytest.raises(FetchError, match="git clone"):
+        fetch(project, target="kernel", force=False)

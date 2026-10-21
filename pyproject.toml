@@ -3,10 +3,15 @@ name = "oot"
 version = "0.1.0"
 description = "CLI tool for out-of-tree development"
 authors = [{ name = "Jeremías Benítez" }]
+requires-python = ">=3.10"
 dependencies = [
     "click",
+    "pydantic>=2",
     "pyyaml",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.scripts]
 oot = "oot.cli:cli"
@@ -17,3 +22,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

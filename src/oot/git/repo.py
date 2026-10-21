@@ -1,32 +1,12 @@
 import logging
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 from oot.errors import ConfigError, FetchError
 from oot.git.inspect import is_empty_dir
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_diff_path(diff: str, path: str | Path) -> str:
-    rel = str(path)
-
-    lines = diff.splitlines()
-    out = []
-
-    for line in lines:
-        if line.startswith("diff --git"):
-            out.append(f"diff --git a{rel} b{rel}")
-        elif line.startswith("--- "):
-            out.append(f"--- a{rel}")
-        elif line.startswith("+++ "):
-            out.append(f"+++ b{rel}")
-        else:
-            out.append(line)
-
-    return "\n".join(out) + "\n"
 
 
 class Repo:
@@ -38,48 +18,19 @@ class Repo:
         defaults = {"capture_output": True, "text": True}
         return subprocess.run(["git", "-C", self.path, *args], **{**defaults, **kwargs})
 
-    def get_blob(self, blob: str):
-        base = self.git("show", blob)
-        if base.returncode != 0:
-            raise RuntimeError(f"blob {blob} not found")
+    def get_blob_hash(self, rel_path: str, rev: str = "HEAD") -> str | None:
+        """Return the blob hash of rel_path at rev, or None if absent."""
+        r = self.git("rev-parse", "--verify", "--quiet", f"{rev}:{rel_path}")
+        return r.stdout.strip() if r.returncode == 0 else None
 
-        return base
+    def read_blob(self, blob: str) -> bytes | None:
+        """Return a blob's raw content, or None if the object is not in the repo."""
+        r = self.git("cat-file", "blob", blob, text=False)
+        return r.stdout if r.returncode == 0 else None
 
-    def get_blob_hash(self, rel_path: str) -> str | None:
-        """Return HEAD blob hash for a file in the kernel repo, or None if absent."""
-        r = self.git("ls-tree", "HEAD", rel_path)
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
-        parts = r.stdout.split()
-        return parts[2] if len(parts) >= 3 else None
-
-    def get_head_blob(self):
-        r = self.git("rev-parse", "HEAD", check=True)
-        return r.stdout.strip()
-
-    def get_diff(
-        self, base_blob: str, target_path: str | Path, rel_path: str | Path
-    ) -> str:
-        base = self.get_blob(base_blob)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            base_file = Path(tmp) / "base"
-            base_file.write_text(base.stdout)
-
-            r = self.git("diff", str(base_file), str(target_path))
-
-            if r.returncode not in (0, 1):
-                raise RuntimeError(f"git diff failed:\n{r.stderr}")
-
-            diff = r.stdout
-
-            return normalize_diff_path(diff, rel_path)
-
-    def apply(self, diff: str, dry_run: bool = False):
-        if dry_run:
-            return self.git("apply", "--check", input=diff)
-
-        return self.git("apply", "--3way", input=diff)
+    def rev_parse(self, rev: str) -> str | None:
+        r = self.git("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+        return r.stdout.strip() if r.returncode == 0 else None
 
     def clone(self, ref: str, depth: int = 1, force: bool = False):
         logger.info(f"Cloning repo from {self.url} to {self.path}")
@@ -90,7 +41,8 @@ class Repo:
 
         self.path.mkdir(parents=True, exist_ok=True)
 
-        return self.git(
+        # output not captured so clone progress and errors reach the terminal
+        r = self.git(
             "clone",
             "--depth",
             str(depth),
@@ -100,6 +52,10 @@ class Repo:
             self.path,
             capture_output=False,
         )
+        if r.returncode != 0:
+            raise FetchError(f"git clone {self.url} failed (exit {r.returncode})")
+
+        return r
 
     def update(self, ref: str, depth: int = 1):
         origin = self.get_origin()
