@@ -53,7 +53,7 @@ You can also move to a newer `kernel.ref`: fetch it, then install. Install merge
 | Command | What it does |
 |---|---|
 | `oot fetch [-t kernel\|patches\|all] [-f]` | Clone each repo at its `ref`, or update an existing clone to it (reset and clean). Refuses to update a repo with local commits or uncommitted changes. `-f` discards them and re-clones. |
-| `oot sync -m <message> [--dry-run]` | Make the patches repo mirror the kernel's committed changes since its base, and commit. Asks before continuing if the kernel has uncommitted changes. `--dry-run` prints the plan and changes nothing. |
+| `oot sync -m <message> [--dry-run]` | Make the patches repo mirror the kernel's committed changes since its base, and commit. Asks before continuing if the kernel has uncommitted changes, or if the sync would remove more than half of the patch set. `--dry-run` prints the plan and changes nothing. |
 | `oot install [--dry-run] [--on-conflict abort\|skip\|force] [-ff] [-m <metadata>]` | Apply the patch set to the kernel and commit once. Without `--on-conflict` it prompts per conflict. `--dry-run` only reports conflicts. `-ff` stops at the first error. |
 | `oot path kernel\|patches` | Print the resolved directory. |
 | `oot git <args>` | Run `git -C <patches dir> <args>` and exit with git's exit code. |
@@ -100,7 +100,7 @@ Files you want versioned in the patches repo but not touched by `oot` (README, C
 3. The patches repo is made to match: changed files are written with their content at `HEAD`, base copies are written from the base, and patch files no longer changed are removed. `metadata.json`, `.oot/`, `.ootignore` and what `.ootignore` matches are never treated as patches. A kernel change to one of those paths, or to a path the patches repo's `.gitignore` ignores, is an error.
 4. The patches repo is committed with the given message, if anything changed. It is created with `git init` if it does not exist yet.
 
-Each sync describes the whole patch set from scratch, so the patches repo is generated output: hand edits there are overwritten.
+Each sync describes the whole patch set from scratch, so the patches repo is generated output: hand edits there are overwritten. Syncing a kernel that does not have the patches installed would remove them, so sync asks first when it would remove more than half of the current patch set.
 
 ### install
 

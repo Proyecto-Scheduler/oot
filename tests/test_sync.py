@@ -350,6 +350,63 @@ def test_gitignored_kernel_files_are_not_dirty(project, worked, patches):
 
 
 # ---------------------------------------------------------------------------
+# Guard: removing most of the patch set
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def synced_then_fresh(tmp_path, upstream, worked, patches):
+    """A patch set of 3, and a fresh kernel clone without it installed."""
+    sync(make_project(tmp_path, worked, patches), "first")
+    fresh = clone(upstream, tmp_path / "fresh")
+    return make_project(tmp_path, fresh, patches)
+
+
+def test_removing_most_patches_asks_and_stops_when_declined(synced_then_fresh, patches):
+    before = git(patches, "rev-parse", "HEAD")
+    asked = []
+
+    sync(synced_then_fresh, "oops", confirm=lambda msg: asked.append(msg) or False)
+
+    assert "remove 3 of 3" in asked[0]
+    assert "oot install" in asked[0]
+    assert git(patches, "rev-parse", "HEAD") == before
+    assert (patches / "sys/kern/sched_petri.c").exists()
+
+
+def test_removing_most_patches_proceeds_when_accepted(synced_then_fresh, patches):
+    sync(synced_then_fresh, "really", confirm=lambda _: True)
+
+    assert read_metadata(patches).files == []
+    assert not (patches / "sys/kern/sched_petri.c").exists()
+
+
+def test_removing_a_minority_does_not_ask(project, worked, patches):
+    sync(project, "first")
+    commit(worked, {"sys/kern/sched_4bsd.c": "sched v1\n"}, "revert one")
+
+    sync(project, "second", confirm=never_called)
+
+    assert "sys/kern/sched_4bsd.c" not in entries(patches)
+
+
+def test_removing_exactly_half_does_not_ask(project, kernel, patches):
+    commit(kernel, {"sys/kern/a.c": "a\n", "sys/kern/b.c": "b\n"})
+    sync(project, "first")
+    commit(kernel, {"sys/kern/b.c": None})
+
+    sync(project, "second", confirm=never_called)
+
+
+def test_dry_run_warns_about_removing_most_patches(synced_then_fresh, capsys):
+    capsys.readouterr()
+
+    sync(synced_then_fresh, "x", dry_run=True, confirm=never_called)
+
+    assert "would remove 3 of 3" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
 # Dry run (plan)
 # ---------------------------------------------------------------------------
 

@@ -40,6 +40,17 @@ class Plan:
     dirty: list[str] = field(default_factory=list)
 
 
+def _mass_removal(plan: Plan) -> str | None:
+    """Warning when the sync would remove more than half of the current patch set."""
+    current = len(plan.update) + len(plan.remove) + plan.unchanged
+    if not current or len(plan.remove) * 2 <= current:
+        return None
+    return (
+        f"This sync would remove {len(plan.remove)} of {current} patches from the patch set.\n"
+        "That usually means the patches are not installed in this kernel (run 'oot install' first)."
+    )
+
+
 def _is_repo_root(path: Path) -> bool:
     return (path / ".git").exists()
 
@@ -154,6 +165,10 @@ def format_plan(plan: Plan, ref: str) -> str:
     else:
         lines.append("No changes. The patch set matches the kernel.")
 
+    warning = _mass_removal(plan)
+    if warning:
+        lines += ["", f"Warning: {warning}"]
+
     if plan.dirty:
         lines += ["", "Uncommitted changes in the kernel (not synced):"]
         lines += [f"    {d}" for d in plan.dirty]
@@ -222,6 +237,11 @@ def sync(
         + "\nContinue with the committed state only? (No: stop so you can commit first)"
     ):
         logger.warning("Sync stopped. Commit your kernel changes and run 'oot sync' again.")
+        return
+
+    warning = _mass_removal(plan)
+    if warning and not confirm(f"{warning}\nRemove them anyway?"):
+        logger.warning("Sync stopped. Nothing was changed.")
         return
 
     _apply(plan, patches_dir, cfg.patches.ref, message)

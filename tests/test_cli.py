@@ -187,6 +187,17 @@ def test_sync_dirty_kernel_prompt_accept_continues(worked, tmp_path):
     assert patches_log(tmp_path) == "x"
 
 
+def test_sync_removing_most_patches_prompt_decline_stops(worked, tmp_path):
+    CliRunner().invoke(cli, ["sync", "-m", "first"])
+    git(worked, "reset", "-q", "--hard", "v1")  # as if the patches were never installed
+
+    r = CliRunner().invoke(cli, ["sync", "-m", "oops"], input="n\n")
+
+    assert r.exit_code == 0, r.output
+    assert "remove 1 of 1" in r.output
+    assert patches_log(tmp_path) == "first"
+
+
 def test_sync_command_requires_message(worked):
     r = CliRunner().invoke(cli, ["sync"])
     assert r.exit_code == 2
